@@ -71,7 +71,7 @@ class CheckpointingConfig:
     save_every_n_steps: int = 2000
 
     # Should be in the format of <(username or )>/<repo_name>, e.g. pico-lm/pico-7b
-    save_checkpoint_repo_id: Optional[str] = "pico-lm/demo"
+    save_checkpoint_repo_id: Optional[str] = "davidafrica/pico-maml"
 
     training: TrainingCheckpointingConfig = field(
         default_factory=TrainingCheckpointingConfig

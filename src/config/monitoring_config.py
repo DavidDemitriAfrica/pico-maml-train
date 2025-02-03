@@ -17,7 +17,7 @@ class LoggingConfig:
 @dataclass
 class ExperimentTrackerConfig:
     framework: Optional[str] = "wandb"
-    wandb_project: Optional[str] = "pico"
+    wandb_project: Optional[str] = "pico-maml"
     wandb_entity: Optional[str] = "pico-lm"
 
 
