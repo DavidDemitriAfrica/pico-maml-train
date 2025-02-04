@@ -124,7 +124,7 @@ def initialize_configuration(
         checkpointing_config = _apply_config_overrides(
             checkpointing_config, overrides.get("checkpointing", {})
         )
-        smlmt_config = _apply_config_overrides(smlmt_config, overrides.get("smlmt, {}"))
+        smlmt_config = _apply_config_overrides(smlmt_config, overrides.get("smlmt", {}))
 
     configs = {
         "data": data_config,
