@@ -119,21 +119,41 @@ class Trainer:
             print(f"SMLMT enabled with probability {self.smlmt_probability}")
 
             # If sentences are provided in the config, use them; otherwise, extract from train_dataset.
-            if self.configs["smlmt"].sentences:
+            if self.configs["smlmt"].get("sentences", []):
                 self.smlmt_sentences = self.configs["smlmt"]["sentences"]
             else:
                 self.smlmt_sentences = []
-                # Sample up to 1000 sentences from the train dataset.
-                num_samples = min(1000, len(self.train_dataset))
-                for i in range(num_samples):
-                    example = self.train_dataset[i]
-                    if "text" in example:
-                        self.smlmt_sentences.append(example["text"])
-                    elif "input_ids" in example:
-                        # Decode the token ids to text using your tokenizer.
-                        self.smlmt_sentences.append(
-                            self.tokenizer.decode(example["input_ids"])
-                        )
+                max_samples = 1000
+
+                # Check if the dataset supports __len__ and indexing.
+                try:
+                    dataset_length = len(self.train_dataset)
+                    num_samples = min(max_samples, dataset_length)
+                    for i in range(num_samples):
+                        example = self.train_dataset[i]
+                        if "text" in example:
+                            self.smlmt_sentences.append(example["text"])
+                        elif "input_ids" in example:
+                            self.smlmt_sentences.append(
+                                self.tokenizer.decode(example["input_ids"])
+                            )
+                except TypeError:
+                    # Fallback for iterable datasets that do not support len() or indexing.
+                    samples_collected = 0
+                    iterator = iter(self.train_dataset)
+                    while samples_collected < max_samples:
+                        try:
+                            example = next(iterator)
+                        except StopIteration:
+                            break
+                        if "text" in example:
+                            self.smlmt_sentences.append(example["text"])
+                            samples_collected += 1
+                        elif "input_ids" in example:
+                            self.smlmt_sentences.append(
+                                self.tokenizer.decode(example["input_ids"])
+                            )
+                            samples_collected += 1
 
             if not self.configs["smlmt"].vocabulary:
                 # For example, sample 100 words from the tokenizer's vocabulary.
