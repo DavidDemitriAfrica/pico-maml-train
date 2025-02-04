@@ -568,14 +568,21 @@ class Trainer:
                             torch.empty(
                                 support_inputs["input_ids"].size(0),
                                 0,
-                                self.configs["model"].attention_n_heads,
-                                d_model // self.configs["model"].attention_n_heads,
+                                self.configs[
+                                    "model"
+                                ].attention_n_kv_heads,  # <-- use n_kv_heads here
+                                d_model
+                                // self.configs[
+                                    "model"
+                                ].attention_n_heads,  # head_dim remains the same
                                 device=self.fabric.device,
                             ),
                             torch.empty(
                                 support_inputs["input_ids"].size(0),
                                 0,
-                                self.configs["model"].attention_n_heads,
+                                self.configs[
+                                    "model"
+                                ].attention_n_kv_heads,  # <-- use n_kv_heads here
                                 d_model // self.configs["model"].attention_n_heads,
                                 device=self.fabric.device,
                             ),
