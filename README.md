@@ -2,22 +2,6 @@
 
 Pico is a framework designed to facilitate research into language model learning dynamics through a comprehensive suite of small to medium-scale models (1M-1B parameters). Built on a LLAMA-style architecture, Pico emphasizes simplicity, modularity, and research accessibility. We fork Pico to implement Subset Masked Language Modeling Tasks (SMLMT) an unsupervised approach to create meta-training tasks from unlabeled data. We then implement Model-Agnostic Meta-Learning (MAML) to train the actual model.
 
-## 🔄 Training Philosophy
-
-All models in a Pico suite (whether our pre-trained ones or your custom trained ones):
-- Share identical architectures and optimizers
-- Train on the same tokens in identical order
-- Save rich checkpoint data including activations and gradients
-- Enable direct comparisons across model scales
-
-## 📦 Resources
-
-All our pre-trained models and datasets are publicly available through our [HuggingFace organization](https://huggingface.co/pico-lm):
-- Pre-trained models (1M to 1B parameters)
-- Pre-tokenized training data derived from the DOLMA corpus
-- Training checkpoints with activation and gradient information
-- Basic evaluation (perplexity) metrics logged throughout training
-
 ## 🚀 Quick Start
 
 1. **Clone Project**
@@ -51,6 +35,11 @@ The core implementation is organized into these key files and packages:
   - Checkpoint management
   - Logging configuration
 
+- **`src/training/smlmt.py`**: SMLMT helper class
+  - Task generation
+  - Task sampling
+  - Injecting your own sentences
+
 - **`src/config`**: Model configuration
   - Hyperparameter definitions
   - Model architecture settings
@@ -80,21 +69,16 @@ model = AutoModelForCausalLM.from_pretrained("pico-lm/[...]")
 poetry run train --config_path my_config.yaml
 ```
 
-
-## 📊 Coming Soon: Pico Analysis
-
-A companion framework for analyzing Pico checkpoints:
-- Mechanistic interpretability tools
-- Learning dynamics visualization
-- Cross-scale model comparisons
-- Training trajectory analysis
-
 ## 📚 References
 
 Our implementation draws inspiration from and builds upon:
 - [LLAMA](https://arxiv.org/abs/2302.13971)
 - [RoPE](https://arxiv.org/abs/2104.09864)
 - [SwiGLU](https://arxiv.org/abs/2002.05202)
+- [MAML](https://arxiv.org/abs/1703.03400)
+- [SMLMT](https://arxiv.org/abs/2009.08445)
+- [SMLMT w/ Prototypical Networks](https://aclanthology.org/2021.metanlp-1.8/)
+
 
 ## 🤝 Contributing
 
@@ -111,17 +95,17 @@ Apache 2.0 License
 
 ## 📫 Contact
 
-- GitHub: [rdiehlmartinez/pico](https://github.com/rdiehlmartinez/pico)
-- Author: [Richard Diehl Martinez](https://richarddiehlmartinez.com)
+- GitHub: [DavidDemitriAfrica/pico-maml](https://github.com/DavidDemitriAfrica/pico-maml)
+- Author: [David Demitri Africa](https://daviddemitriafrica.github.io/)
 
 ## Citation
 
-If you use Pico in your research, please cite:
+If you use Pico-MAML in your research, please cite:
 
 ```bibtex
-@software{pico2024,
-    author = {Diehl Martinez, Richard},
-    title = {Pico: Framework for Training Tiny Language Models},
-    year = {2024},
+@software{picomaml2025,
+    author = {Africa, David Demitri},
+    title = {Pico-MAML: Learning Dynamics Research on Model-Agnostic Meta-Learning},
+    year = {2025},
 }
 ```
