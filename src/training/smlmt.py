@@ -150,7 +150,6 @@ class SMLMTDataset(Dataset):
             self.mask_token,
         )
         support_set, query_set = task_generator.generate_task()
-        # You may return the support/query sets in any convenient format (e.g. as dictionaries).
         return {"support": support_set, "query": query_set}
 
 

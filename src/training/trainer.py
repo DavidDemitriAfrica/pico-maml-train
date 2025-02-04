@@ -573,6 +573,7 @@ class Trainer:
 
                 batch_step += 1
                 self.log(f"Current batch step: {batch_step}", level=logging.INFO)
+
                 continue  # Skip the rest of this loop; do not process a supervised batch
 
             # ---- END SMLMT branch; continue with existing supervised training ----
