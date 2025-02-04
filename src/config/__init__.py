@@ -22,3 +22,4 @@ from .model_config import ModelConfig
 from .evaluation_config import EvaluationConfig
 from .monitoring_config import MonitoringConfig
 from .checkpointing_config import CheckpointingConfig
+from .smlmt_config import SMLMTConfig

@@ -32,6 +32,7 @@ from src.config import (
     EvaluationConfig,
     MonitoringConfig,
     CheckpointingConfig,
+    SMLMTConfig,
 )
 
 from lightning.fabric.loggers import Logger as FabricLogger
@@ -84,6 +85,7 @@ def initialize_configuration(
         EvaluationConfig,
         MonitoringConfig,
         CheckpointingConfig,
+        SMLMTConfig,
     ],
 ]:
     """Initialize configuration objects with optional overrides from a YAML file.
@@ -104,6 +106,7 @@ def initialize_configuration(
     evaluation_config = EvaluationConfig()
     monitoring_config = MonitoringConfig()
     checkpointing_config = CheckpointingConfig()
+    smlmt_config = SMLMTConfig()
 
     if config_path:
         overrides = yaml.safe_load(open(config_path, "r"))
@@ -121,6 +124,7 @@ def initialize_configuration(
         checkpointing_config = _apply_config_overrides(
             checkpointing_config, overrides.get("checkpointing", {})
         )
+        smlmt_config = _apply_config_overrides(smlmt_config, overrides.get("smlmt, {}"))
 
     configs = {
         "data": data_config,
@@ -129,6 +133,7 @@ def initialize_configuration(
         "evaluation": evaluation_config,
         "monitoring": monitoring_config,
         "checkpointing": checkpointing_config,
+        "smlmt": smlmt_config,
     }
 
     return configs

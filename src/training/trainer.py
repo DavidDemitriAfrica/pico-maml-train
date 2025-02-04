@@ -109,7 +109,7 @@ class Trainer:
         self.tokenizer = initialize_tokenizer(data_config=self.configs["data"])
 
         # --- Setup SMLMT meta-learning if enabled ---
-        self.smlmt_enabled = self.configs.get("smlmt", {}).get("enabled", False)
+        self.smlmt_enabled = self.configs.get("smlmt", {}).get("enabled", True)
         if self.smlmt_enabled:
             self.smlmt_probability = self.configs["smlmt"].get("probability", 1)
             self.log(f"SMLMT enabled with probability {self.smlmt_probability}")
