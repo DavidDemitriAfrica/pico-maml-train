@@ -109,17 +109,17 @@ class Trainer:
         self.tokenizer = initialize_tokenizer(data_config=self.configs["data"])
 
         # --- Setup SMLMT meta-learning if enabled ---
-        self.smlmt_enabled = self.configs.get("smlmt", {}).get("enabled", True)
+        self.smlmt_enabled = self.configs["smlmt"].enabled
         if self.smlmt_enabled:
-            self.smlmt_probability = self.configs["smlmt"].get("probability", 1)
-            self.log(f"SMLMT enabled with probability {self.smlmt_probability}")
+            self.smlmt_probability = self.configs["smlmt"].probability
+            self.smlmt_num_classes = self.configs["smlmt"].num_classes
+            self.smlmt_support = self.configs["smlmt"].support_per_class
+            self.smlmt_query = self.configs["smlmt"].query_per_class
+            self.smlmt_vocabulary = self.configs["smlmt"].vocabulary
             print(f"SMLMT enabled with probability {self.smlmt_probability}")
-            self.smlmt_num_classes = self.configs["smlmt"].get("num_classes", 3)
-            self.smlmt_support = self.configs["smlmt"].get("support_per_class", 2)
-            self.smlmt_query = self.configs["smlmt"].get("query_per_class", 2)
 
             # If sentences are provided in the config, use them; otherwise, extract from train_dataset.
-            if self.configs["smlmt"].get("sentences", []):
+            if self.configs["smlmt"].sentences:
                 self.smlmt_sentences = self.configs["smlmt"]["sentences"]
             else:
                 self.smlmt_sentences = []
@@ -135,16 +135,15 @@ class Trainer:
                             self.tokenizer.decode(example["input_ids"])
                         )
 
-            # Vocabulary can be provided via config. (You might also generate this from the tokenizer.)
-            self.smlmt_vocabulary = self.configs["smlmt"].get("vocabulary", [])
-            # Optionally, if no vocabulary is provided, you could pull words from the tokenizer's vocab.
-            if not self.smlmt_vocabulary:
+            if not self.configs["smlmt"].vocabulary:
                 # For example, sample 100 words from the tokenizer's vocabulary.
                 full_vocab = list(self.tokenizer.get_vocab().keys())
 
                 self.smlmt_vocabulary = random.sample(
                     full_vocab, min(100, len(full_vocab))
                 )
+            else:
+                self.smlmt_vocabulary = self.configs["smlmt"].get("vocabulary", [])
 
         # Setup Model, Optimizer, and Dataloaders
         self.model = Pico(model_config=self.configs["model"], fabric=self.fabric)
