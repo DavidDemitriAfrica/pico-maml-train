@@ -38,3 +38,23 @@ training:
   
   fabric:
     num_devices: 1
+
+smlmt:
+  enabled: true
+  probability: 0.5         # probability that the meta–learning component is computed on any given iteration
+  num_classes: 3           # K: number of target words per task
+  support_per_class: 2     # S: number of support sentences per class
+  query_per_class: 2       # Q: number of query sentences per class
+  sentences:
+    - "The quick brown fox jumps over the lazy dog."
+    - "I love to eat apples and bananas."
+    - "The weather today is sunny and bright."
+    - "She sells seashells by the seashore."
+    - "Reading books is a great way to learn."
+    - "Dogs are loyal and friendly animals."
+    - "Apples are delicious and nutritious."
+    - "The fox is clever and fast."
+    - "He is reading a book on meta-learning."
+    - "Learning from self-supervised tasks can be fun."
+  vocabulary: ["fox", "apples", "reading", "dogs", "weather"]
+  smlmt_weight: 0.7  # weight to scale the meta–learning loss relative to the supervised loss
