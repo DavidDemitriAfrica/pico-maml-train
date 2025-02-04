@@ -141,7 +141,6 @@ class Trainer:
             if not self.smlmt_vocabulary:
                 # For example, sample 100 words from the tokenizer's vocabulary.
                 full_vocab = list(self.tokenizer.get_vocab().keys())
-                import random
 
                 self.smlmt_vocabulary = random.sample(
                     full_vocab, min(100, len(full_vocab))
