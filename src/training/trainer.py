@@ -119,7 +119,7 @@ class Trainer:
             print(f"SMLMT enabled with probability {self.smlmt_probability}")
 
             # If sentences are provided in the config, use them; otherwise, extract from train_dataset.
-            if self.configs["smlmt"]["sentences"]:
+            if self.configs["smlmt"].sentences:
                 self.smlmt_sentences = self.configs["smlmt"]["sentences"]
             else:
                 self.smlmt_sentences = []
