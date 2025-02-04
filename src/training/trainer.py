@@ -17,6 +17,7 @@ import logging
 import lightning as L
 import torch
 import torch.nn.functional as F
+import torch.optim as optim
 import os
 from lightning.fabric.utilities.rank_zero import rank_zero_only
 import random
@@ -544,11 +545,12 @@ class Trainer:
                 # Set inner loop hyperparameters (specify these in your config under smlmt, e.g., inner_lr and inner_steps)
                 inner_lr = self.configs["smlmt"].inner_lr  # e.g., 1e-3
                 inner_steps = self.configs["smlmt"].inner_steps  # e.g., 1 or 5
+                inner_optimizer = optim.AdamW(self.model.parameters(), lr=inner_lr)
 
                 # Use higher to create a functional version of the model.
 
                 with higher.innerloop_ctx(
-                    self.model, self.optimizer, copy_initial_weights=True
+                    self.model, inner_optimizer, copy_initial_weights=True
                 ) as (fmodel, diffopt):
                     # Perform inner loop updates on the support set.
                     for _ in range(inner_steps):
