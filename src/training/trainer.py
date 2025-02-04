@@ -455,6 +455,7 @@ class Trainer:
 
             # ---- NEW: Check if we run an SMLMT episode ----
             if self.smlmt_enabled and random.random() < self.smlmt_probability:
+                self.log("SMLMT branch triggered", level=logging.DEBUG)
                 # Generate one SMLMT task (episode)
                 task_generator = SMLMTTask(
                     self.smlmt_sentences,
@@ -468,7 +469,7 @@ class Trainer:
                 )
                 support_set, query_set = task_generator.generate_task()
 
-                # Tokenize support and query sentences
+                # Tokenize support and query sentences.
                 support_texts = [sent for (sent, _) in support_set]
                 query_texts = [sent for (sent, _) in query_set]
                 support_inputs = self.tokenizer(
@@ -482,12 +483,12 @@ class Trainer:
                 for key in query_inputs:
                     query_inputs[key] = query_inputs[key].to(self.fabric.device)
 
-                # Forward pass with return_hidden=True to extract features
+                # Forward pass with return_hidden=True to extract features.
                 _, support_hidden, _ = self.model(**support_inputs, return_hidden=True)
                 _, query_hidden, _ = self.model(**query_inputs, return_hidden=True)
-                # For simplicity, use mean pooling over the sequence dimension
-                support_repr = support_hidden.mean(dim=1)  # shape: (N_support, d_model)
-                query_repr = query_hidden.mean(dim=1)  # shape: (N_query, d_model)
+                # Use mean pooling over the sequence dimension.
+                support_repr = support_hidden.mean(dim=1)
+                query_repr = query_hidden.mean(dim=1)
 
                 # Compute prototypes (one per class) from support examples
                 prototypes = []
@@ -524,6 +525,15 @@ class Trainer:
 
                 # Log the SMLMT loss
                 self.fabric.log("train/smlmt_loss", loss.item(), step=batch_step)
+                self.log(
+                    f"Support repr mean: {support_repr.mean().item():.4f}, std: {support_repr.std().item():.4f}",
+                    level=logging.DEBUG,
+                )
+                self.log(
+                    f"Prototype[0] norm: {prototypes[0].norm().item():.4f}",
+                    level=logging.DEBUG,
+                )
+
                 batch_step += 1
                 continue  # Skip the rest of this loop; do not process a supervised batch
 
@@ -729,7 +739,8 @@ class Trainer:
             else float("inf")
         )
 
-        self.fabric.log("train/loss", avg_loss, step=batch_step)
+        self.fabric.log("train/supervised_loss", avg_loss, step=batch_step)
+
         self.fabric.log(
             "trainer/inf_or_nan_count",
             gathered_interval_inf_or_nan_count,
