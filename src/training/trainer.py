@@ -564,7 +564,6 @@ class Trainer:
 
                 # Log the SMLMT loss
                 self.fabric.log("train/smlmt_loss", loss.item(), step=batch_step)
-                self.log("train/smlmt_loss", loss.item())
                 self.log(
                     f"Support repr mean: {support_repr.mean().item():.4f}, std: {support_repr.std().item():.4f}",
                 )
