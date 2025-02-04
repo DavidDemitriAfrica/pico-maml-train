@@ -525,7 +525,7 @@ class Pico(nn.Module):
                     mask = mask + attn_mask
                     cached_key_values = () if use_cache else None
             # If you need a 4D mask (for some backends), you could also expand it to:
-            # mask = mask.unsqueeze(1)  # shape becomes (batch_size, 1, seq_len, seq_len)
+            mask = mask.unsqueeze(1)  # shape becomes (batch_size, 1, seq_len, seq_len)
         # End mask creation
 
         # Process through transformer blocks
