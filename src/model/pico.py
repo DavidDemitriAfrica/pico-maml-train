@@ -473,6 +473,7 @@ class Pico(nn.Module):
         input_ids: torch.Tensor,
         past_key_values: Optional[Tuple[Tuple[torch.Tensor]]] = None,
         use_cache: bool = False,
+        return_hidden: bool = False,  # NEW: optional flag for SMLMT
     ) -> Tuple[torch.Tensor, Optional[Tuple[Tuple[torch.Tensor, torch.Tensor]]]]:
         """
         This is the forward pass for the entire Pico model. It boils down to:
@@ -536,7 +537,10 @@ class Pico(nn.Module):
         h = self.output_norm(h)
         logits = self.de_embedding_proj(h).float()
 
-        return logits, cached_key_values
+        if return_hidden:
+            return logits, h, cached_key_values
+        else:
+            return logits, cached_key_values
 
 
 ########################################################

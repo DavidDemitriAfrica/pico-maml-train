@@ -19,12 +19,13 @@ import torch
 import torch.nn.functional as F
 import os
 from lightning.fabric.utilities.rank_zero import rank_zero_only
+import random
 
 from datasets import Dataset, load_dataset
 from typing import Dict, Any
 
 from src.model import Pico
-
+from .smlmt import SMLMTTask
 from src.training.utils import (
     initialize_run_dir,
     initialize_fabric,
@@ -106,6 +107,16 @@ class Trainer:
             dataset=self.train_dataset,
         )
         self.tokenizer = initialize_tokenizer(data_config=self.configs["data"])
+
+        # --- Setup SMLMT meta-learning if enabled ---
+        self.smlmt_enabled = self.configs.get("smlmt", {}).get("enabled", False)
+        if self.smlmt_enabled:
+            self.smlmt_probability = self.configs["smlmt"].get("probability", 0.3)
+            self.smlmt_num_classes = self.configs["smlmt"].get("num_classes", 3)
+            self.smlmt_support = self.configs["smlmt"].get("support_per_class", 2)
+            self.smlmt_query = self.configs["smlmt"].get("query_per_class", 2)
+            self.smlmt_sentences = self.configs["smlmt"].get("sentences", [])
+            self.smlmt_vocabulary = self.configs["smlmt"].get("vocabulary", [])
 
         # Setup Model, Optimizer, and Dataloaders
         self.model = Pico(model_config=self.configs["model"], fabric=self.fabric)
@@ -409,32 +420,99 @@ class Trainer:
         for sub_batch_step, sub_batch in enumerate(
             self.train_iterator, start=initial_sub_batch_step
         ):
-            # NOTE: We want to store the entire training batch whenever we are computing learning dynamics
-            # and we are at a checkpointing step.
-            should_store_training_batch = self.should_compute_learning_dynamics and (
-                batch_step % self.configs["checkpointing"].save_every_n_steps == 0
-            )
-
             ########################################################
             #
             # Forward Pass
             #
             ########################################################
 
+            # ---- NEW: Check if we run an SMLMT episode ----
+            if self.smlmt_enabled and random.random() < self.smlmt_probability:
+                # Generate one SMLMT task (episode)
+                task_generator = SMLMTTask(
+                    self.smlmt_sentences,
+                    self.smlmt_vocabulary,
+                    num_classes=self.smlmt_num_classes,
+                    support_per_class=self.smlmt_support,
+                    query_per_class=self.smlmt_query,
+                    mask_token=self.tokenizer.mask_token
+                    if hasattr(self.tokenizer, "mask_token")
+                    else "[MASK]",
+                )
+                support_set, query_set = task_generator.generate_task()
+
+                # Tokenize support and query sentences
+                support_texts = [sent for (sent, _) in support_set]
+                query_texts = [sent for (sent, _) in query_set]
+                support_inputs = self.tokenizer(
+                    support_texts, return_tensors="pt", padding=True, truncation=True
+                )
+                query_inputs = self.tokenizer(
+                    query_texts, return_tensors="pt", padding=True, truncation=True
+                )
+                for key in support_inputs:
+                    support_inputs[key] = support_inputs[key].to(self.fabric.device)
+                for key in query_inputs:
+                    query_inputs[key] = query_inputs[key].to(self.fabric.device)
+
+                # Forward pass with return_hidden=True to extract features
+                _, support_hidden, _ = self.model(**support_inputs, return_hidden=True)
+                _, query_hidden, _ = self.model(**query_inputs, return_hidden=True)
+                # For simplicity, use mean pooling over the sequence dimension
+                support_repr = support_hidden.mean(dim=1)  # shape: (N_support, d_model)
+                query_repr = query_hidden.mean(dim=1)  # shape: (N_query, d_model)
+
+                # Compute prototypes (one per class) from support examples
+                prototypes = []
+                for c in range(self.smlmt_num_classes):
+                    indices = [
+                        i for i, (_, label) in enumerate(support_set) if label == c
+                    ]
+                    if indices:
+                        proto = support_repr[indices].mean(dim=0)
+                    else:
+                        proto = torch.zeros(
+                            support_repr.size(-1), device=support_repr.device
+                        )
+                    prototypes.append(proto)
+                prototypes = torch.stack(prototypes, dim=0)  # (num_classes, d_model)
+
+                # Compute Euclidean distances from each query representation to prototypes
+                dists = torch.cdist(
+                    query_repr, prototypes, p=2
+                )  # (N_query, num_classes)
+                # Use negative distances as logits
+                logits_smlmt = -dists
+                # Get ground truth labels from query_set
+                query_labels = torch.tensor(
+                    [label for (_, label) in query_set], device=logits_smlmt.device
+                )
+                loss = F.cross_entropy(logits_smlmt, query_labels)
+
+                # Backpropagation and optimization for the SMLMT episode
+                self.fabric.backward(loss)
+                self.optimizer.step()
+                self.optimizer.zero_grad()
+                self.lr_scheduler.step()
+
+                # Log the SMLMT loss
+                self.fabric.log("train/smlmt_loss", loss.item(), step=batch_step)
+                batch_step += 1
+                continue  # Skip the rest of this loop; do not process a supervised batch
+
+            # ---- END SMLMT branch; continue with existing supervised training ----
+
+            # (Supervised branch: original code to process sub_batch)
             _input_ids = torch.tensor(sub_batch["input_ids"], device=self.fabric.device)
             input_ids = _input_ids[:, :-1]
             labels = _input_ids[:, 1:]
-
-            if should_store_training_batch:
+            # (Optionally store the training batch if learning dynamics is enabled)
+            if self.should_compute_learning_dynamics:
                 gathered_input_ids = self.fabric.all_gather(_input_ids)
-
-                # NOTE: On multi-GPU, we need to reshape the input_ids to be a 2D tensor; on
-                # a single GPU, the input_ids are already a 2D tensor.
                 if self.fabric.world_size > 1:
                     gathered_input_ids = gathered_input_ids.reshape(
                         -1, *gathered_input_ids.shape[2:]
                     )
-
                 training_batch["input_ids"].extend(gathered_input_ids.tolist())
 
             # Forward pass
