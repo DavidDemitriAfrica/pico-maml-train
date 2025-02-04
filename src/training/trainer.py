@@ -111,7 +111,9 @@ class Trainer:
         # --- Setup SMLMT meta-learning if enabled ---
         self.smlmt_enabled = self.configs.get("smlmt", {}).get("enabled", False)
         if self.smlmt_enabled:
-            self.smlmt_probability = self.configs["smlmt"].get("probability", 0.3)
+            self.smlmt_probability = self.configs["smlmt"].get("probability", 1)
+            self.log(f"SMLMT enabled with probability {self.smlmt_probability}")
+            print(f"SMLMT enabled with probability {self.smlmt_probability}")
             self.smlmt_num_classes = self.configs["smlmt"].get("num_classes", 3)
             self.smlmt_support = self.configs["smlmt"].get("support_per_class", 2)
             self.smlmt_query = self.configs["smlmt"].get("query_per_class", 2)
