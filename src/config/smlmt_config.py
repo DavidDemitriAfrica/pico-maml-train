@@ -12,3 +12,5 @@ class SMLMTConfig:
     query_per_class: int = 2
     sentences: List[str] = field(default_factory=list)
     vocabulary: List[str] = field(default_factory=list)
+    inner_lr: float = 0.001
+    inner_steps: int = 1

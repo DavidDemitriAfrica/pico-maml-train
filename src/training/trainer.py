@@ -502,6 +502,7 @@ class Trainer:
 
             # ---- NEW: Check if we run an SMLMT episode ----
             if self.smlmt_enabled and random.random() < self.smlmt_probability:
+                supervised_flag = False
                 self.log("MAML SMLMT branch triggered", level=logging.INFO)
 
                 # Generate one SMLMT task (episode)
@@ -590,26 +591,28 @@ class Trainer:
                 )
                 batch_step += 1
                 self.log(f"Current batch step: {batch_step}", level=logging.INFO)
-                continue  # Skip the rest of this loop; do not process a supervised batch
 
             # ---- END SMLMT branch; continue with existing supervised training ----
+            else:
+                supervised_flag = True
+                # (Supervised branch: original code to process sub_batch)
+                _input_ids = torch.tensor(
+                    sub_batch["input_ids"], device=self.fabric.device
+                )
+                input_ids = _input_ids[:, :-1]
+                labels = _input_ids[:, 1:]
+                # (Optionally store the training batch if learning dynamics is enabled)
+                if self.should_compute_learning_dynamics:
+                    gathered_input_ids = self.fabric.all_gather(_input_ids)
+                    if self.fabric.world_size > 1:
+                        gathered_input_ids = gathered_input_ids.reshape(
+                            -1, *gathered_input_ids.shape[2:]
+                        )
+                    training_batch["input_ids"].extend(gathered_input_ids.tolist())
 
-            # (Supervised branch: original code to process sub_batch)
-            _input_ids = torch.tensor(sub_batch["input_ids"], device=self.fabric.device)
-            input_ids = _input_ids[:, :-1]
-            labels = _input_ids[:, 1:]
-            # (Optionally store the training batch if learning dynamics is enabled)
-            if self.should_compute_learning_dynamics:
-                gathered_input_ids = self.fabric.all_gather(_input_ids)
-                if self.fabric.world_size > 1:
-                    gathered_input_ids = gathered_input_ids.reshape(
-                        -1, *gathered_input_ids.shape[2:]
-                    )
-                training_batch["input_ids"].extend(gathered_input_ids.tolist())
-
-            # Forward pass
-            model_output, _ = self.model(input_ids)
-            model_output = model_output.transpose(1, 2)
+                # Forward pass
+                model_output, _ = self.model(input_ids)
+                model_output = model_output.transpose(1, 2)
 
             ########################################################
             #
@@ -719,11 +722,12 @@ class Trainer:
             #
             ########################################################
 
-            self.optimizer.step()
-            self.optimizer.zero_grad()
-            self.lr_scheduler.step()
+            if supervised_flag:
+                self.optimizer.step()
+                self.optimizer.zero_grad()
+                self.lr_scheduler.step()
 
-            batch_step += 1
+                batch_step += 1
 
             ########################################################
             #
