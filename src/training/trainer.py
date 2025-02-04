@@ -455,7 +455,7 @@ class Trainer:
 
             # ---- NEW: Check if we run an SMLMT episode ----
             if self.smlmt_enabled and random.random() < self.smlmt_probability:
-                self.log("SMLMT branch triggered", level=logging.DEBUG)
+                self.log("SMLMT branch triggered")
                 # Generate one SMLMT task (episode)
                 task_generator = SMLMTTask(
                     self.smlmt_sentences,
