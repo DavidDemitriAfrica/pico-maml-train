@@ -17,11 +17,9 @@ import logging
 import lightning as L
 import torch
 import torch.nn.functional as F
-import torch.optim as optim
 import os
 from lightning.fabric.utilities.rank_zero import rank_zero_only
 import random
-import higher
 
 from datasets import Dataset, load_dataset
 from typing import Dict, Any
@@ -40,6 +38,11 @@ from src.training.utils import (
     initialize_experiment_tracker,
     initialize_logging,
     initialize_optimizer,
+)
+from src.training.utils.maml import (
+    maml_inner_update,
+    forward_classifier_with_params,
+    clone_classifier_params,
 )
 from src.checkpointing import (
     load_checkpoint,
@@ -533,90 +536,37 @@ class Trainer:
 
                 # Re-initialize classifier for the MAML episode
                 self.model.reset_classifier(self.smlmt_num_classes)
-                self.optimizer.param_groups = [
-                    pg
-                    for pg in self.optimizer.param_groups
-                    if pg.get("name", None) != "maml_classifier"
-                ]
-                self.optimizer.add_param_group(
-                    {
-                        "params": self.model.classifier.parameters(),
-                        "name": "maml_classifier",
-                    }
-                )
 
-                # Prepare "dummy_past" (empty past_key_values) if your model requires them
-                num_layers = len(self.model.layers)
-                d_model = self.configs["model"].d_model
-                dummy_past = tuple(
-                    [
-                        (
-                            torch.empty(
-                                support_inputs["input_ids"].size(0),
-                                0,
-                                self.configs["model"].attention_n_kv_heads,
-                                d_model // self.configs["model"].attention_n_heads,
-                                device=self.fabric.device,
-                            ),
-                            torch.empty(
-                                support_inputs["input_ids"].size(0),
-                                0,
-                                self.configs["model"].attention_n_kv_heads,
-                                d_model // self.configs["model"].attention_n_heads,
-                                device=self.fabric.device,
-                            ),
-                        )
-                        for _ in range(num_layers)
-                    ]
-                )
+                # Clone the classifier parameters so we can do the "fast" adaptation
+                fast_params = clone_classifier_params(self.model)
 
                 # --- MAML inner-loop adaptation ---
                 # Set inner loop hyperparameters (specify these in your config under smlmt, e.g., inner_lr and inner_steps)
                 inner_lr = self.configs["smlmt"].inner_lr  # e.g., 1e-3
                 inner_steps = self.configs["smlmt"].inner_steps  # e.g., 1 or 5
-                inner_optimizer = optim.Adam(self.model.parameters(), lr=inner_lr)
 
-                # Use higher.innerloop_ctx for MAML
-                with higher.innerloop_ctx(
-                    self.model, inner_optimizer, copy_initial_weights=True
-                ) as (fmodel, diffopt):
-                    # Disable Fabric's backward hook during the inner loop
-                    with self.fabric.no_backward_sync(self.model):
-                        for _ in range(inner_steps):
-                            # Forward on support set
-                            support_logits, support_hidden, _ = fmodel(
-                                input_ids=support_inputs["input_ids"],
-                                attention_mask=support_inputs["attention_mask"],
-                                return_hidden=True,
-                                past_key_values=dummy_past,
-                            )
-                            support_repr = support_hidden.mean(dim=1)
-                            support_preds = fmodel.classifier(
-                                support_repr
-                            )  # use fmodel, not self.model
-                            support_loss = F.cross_entropy(
-                                support_preds, support_labels
-                            )
-
-                            # Manually compute inner-loop grads
-                            grads = torch.autograd.grad(
-                                support_loss,
-                                list(fmodel.parameters()),
-                                create_graph=True,  # keep graph for meta-update
-                            )
-                            # Apply fast-weight update in higher
-                            diffopt.step(grads, override={"lr": inner_lr})
-
-                    # Evaluate on the query set using the adapted fmodel
-                    query_logits, query_hidden, _ = fmodel(
-                        input_ids=query_inputs["input_ids"],
-                        attention_mask=query_inputs["attention_mask"],
-                        return_hidden=True,
-                        past_key_values=dummy_past,
+                for _ in range(inner_steps):
+                    fast_params, support_loss = maml_inner_update(
+                        self.model,
+                        fast_params,
+                        support_inputs,
+                        support_labels,
+                        inner_lr=inner_lr,
+                        create_graph=True,
                     )
-                    query_repr = query_hidden.mean(dim=1)
-                    query_preds = fmodel.classifier(query_repr)
-                    query_loss = F.cross_entropy(query_preds, query_labels)
+
+                # Evaluate on the query set using the adapted fmodel
+                _, query_hidden, _ = self.model(
+                    query_inputs["input_ids"],
+                    attention_mask=query_inputs["attention_mask"],
+                    return_hidden=True,
+                )
+
+                query_repr = query_hidden.mean(dim=1)
+                query_preds = forward_classifier_with_params(
+                    self.model, query_repr, fast_params
+                )
+                query_loss = F.cross_entropy(query_preds, query_labels)
 
                 # The meta loss is the query loss.
                 meta_loss = query_loss
@@ -633,7 +583,9 @@ class Trainer:
                 interval_smlmt_loss += meta_loss.item()
                 interval_smlmt_steps += 1
                 self.fabric.log("train/smlmt_loss", meta_loss.item(), step=batch_step)
-
+                self.fabric.log(
+                    "train/smlmt_support_loss", support_loss.item(), step=batch_step
+                )
                 batch_step += 1
 
             # ---- END SMLMT branch; continue with existing supervised training ----
