@@ -41,7 +41,7 @@ training:
 
 smlmt:
   enabled: true
-  probability: 0.5         # probability that the meta–learning component is computed on any given iteration
+  probability: 0.8         # probability that the meta–learning component is computed on any given iteration
   num_classes: 3           # K: number of target words per task
   support_per_class: 2     # S: number of support sentences per class
   query_per_class: 2       # Q: number of query sentences per class
