@@ -1,17 +1,15 @@
-import random
 import re
+import random
 from torch.utils.data import Dataset
 
 
 class SMLMTTask:
     """
-    Class for generating a Self-supervised Meta-Learning Task (SMLMT).
+    Class for generating a Self-supervised Meta-learning Task (SMLMT).
 
     Each task is built from a subset of vocabulary words. For each selected word,
-    it samples S support sentences and Q query sentences from those sentences that
-    contain the word, then masks the target word with a mask token.
-
-    The task is returned as two lists of (masked_sentence, label) tuples.
+    it samples support and query sentences from those sentences that contain the word,
+    then masks the target word with a mask token.
     """
 
     def __init__(
@@ -60,10 +58,9 @@ class SMLMTTask:
                 s for s in self.sentences if self._contains_word(s, word)
             ]
 
-            # In case there are not enough sentences, you might choose to either
-            # sample with replacement or fall back to all sentences.
+            # In case there are not enough sentences, you might fall back to all sentences.
             if len(matching_sentences) < self.support_per_class + self.query_per_class:
-                matching_sentences = self.sentences
+                matching_sentences = [s for s in self.sentences if s is not None]
 
             # Randomly sample S + Q sentences
             sampled = random.sample(
@@ -85,14 +82,20 @@ class SMLMTTask:
     def _mask_word(self, sentence, target_word):
         """
         Replace all full-word occurrences of target_word in sentence with the mask token.
+        If the sentence is None, returns an empty string.
         """
+        if sentence is None:
+            return ""
         pattern = r"\b" + re.escape(target_word) + r"\b"
         return re.sub(pattern, self.mask_token, sentence)
 
     def _contains_word(self, sentence, target_word):
         """
         Returns True if the target_word occurs as a full word in the sentence.
+        If the sentence is None, returns False.
         """
+        if sentence is None:
+            return False
         pattern = r"\b" + re.escape(target_word) + r"\b"
         return re.search(pattern, sentence) is not None
 
@@ -180,7 +183,6 @@ if __name__ == "__main__":
     for sent, label in query:
         print(f"Label {label}: {sent}")
 
-    # Optionally, create a PyTorch dataset for many SMLMT tasks.
     smlmt_dataset = SMLMTDataset(
         sentences,
         vocabulary,
@@ -189,4 +191,3 @@ if __name__ == "__main__":
         query_per_class=2,
         num_tasks=100,
     )
-    # Then wrap it in a DataLoader and integrate with your training loop.
