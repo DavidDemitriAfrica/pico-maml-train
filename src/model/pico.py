@@ -490,6 +490,7 @@ class Pico(nn.Module):
         its own KV cache which is stored as a tuple. The whole model then stores a tuple of these
         KV caches (so a tuple of tuples).
         """
+        cached_key_values = () if use_cache else None
 
         seq_len = input_ids.shape[-1]
         h = self.embedding_proj(input_ids)
@@ -516,19 +517,19 @@ class Pico(nn.Module):
                 mask = torch.hstack([torch.zeros((seq_len, start_pos)), mask]).type_as(
                     h
                 )
-        # If an external attention_mask is provided, combine it.
-        if attention_mask is not None:
-            # Convert the attention mask to the same shape as `mask` and adjust its values.
-            # Typically, attention_mask is 1 for valid tokens and 0 for padding.
-            # Here we convert it to a float mask where 0 means keep and -inf means mask out.
-            attn_mask = (1 - attention_mask.float()) * float("-inf")
-            # Ensure the mask has the correct shape: (batch_size, 1, 1, seq_len) if needed,
-            # and combine it with the causal mask.
-            # For a simple example, we'll assume a broadcastable shape:
-            mask = mask + attn_mask[:, None, :]  # adjust as necessary
-            # NOTE: If we are using the cache, we need to store the cached KV pairs for each layer
-            #       in a tuple. Each layer will have its own cached KV pair which we aggregate in a tuple.
-            cached_key_values = () if use_cache else None
+                # If an external attention_mask is provided, combine it.
+                if attention_mask is not None:
+                    # Convert the attention mask to the same shape as `mask` and adjust its values.
+                    # Typically, attention_mask is 1 for valid tokens and 0 for padding.
+                    # Here we convert it to a float mask where 0 means keep and -inf means mask out.
+                    attn_mask = (1 - attention_mask.float()) * float("-inf")
+                    # Ensure the mask has the correct shape: (batch_size, 1, 1, seq_len) if needed,
+                    # and combine it with the causal mask.
+                    # For a simple example, we'll assume a broadcastable shape:
+                    mask = mask + attn_mask[:, None, :]  # adjust as necessary
+                    # NOTE: If we are using the cache, we need to store the cached KV pairs for each layer
+                    #       in a tuple. Each layer will have its own cached KV pair which we aggregate in a tuple.
+                    cached_key_values = () if use_cache else None
 
         # Process through transformer blocks
         for idx, layer in enumerate(self.layers):
