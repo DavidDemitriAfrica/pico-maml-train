@@ -182,6 +182,9 @@ class Trainer:
 
         # Setup Model, Optimizer, and Dataloaders
         self.model = Pico(model_config=self.configs["model"], fabric=self.fabric)
+        self.optimizer = initialize_optimizer(
+            training_config=self.configs["training"], model=self.model
+        )
         if self.smlmt_enabled:
             # Create a simple classifier head: maps from d_model to the number of classes.
             d_model = self.configs["model"].d_model
@@ -192,9 +195,6 @@ class Trainer:
             self.optimizer.add_param_group(
                 {"params": self.maml_classifier.parameters()}
             )
-        self.optimizer = initialize_optimizer(
-            training_config=self.configs["training"], model=self.model
-        )
         self.lr_scheduler = initialize_lr_scheduler(
             training_config=self.configs["training"], optimizer=self.optimizer
         )
