@@ -527,11 +527,9 @@ class Trainer:
                 self.fabric.log("train/smlmt_loss", loss.item(), step=batch_step)
                 self.log(
                     f"Support repr mean: {support_repr.mean().item():.4f}, std: {support_repr.std().item():.4f}",
-                    level=logging.DEBUG,
                 )
                 self.log(
                     f"Prototype[0] norm: {prototypes[0].norm().item():.4f}",
-                    level=logging.DEBUG,
                 )
 
                 batch_step += 1
@@ -717,6 +715,8 @@ class Trainer:
         interval_loss: torch.Tensor,
         interval_steps: torch.Tensor,
         interval_inf_or_nan_count: torch.Tensor,
+        interval_smlmt_loss: torch.Tensor,  # NEW: accumulated SMLMT loss over the interval
+        interval_smlmt_steps: torch.Tensor,  # NEW: number of SMLMT updates in the interval
         batch_step: int,
     ):
         """
@@ -733,14 +733,27 @@ class Trainer:
             interval_steps, reduce_op="sum"
         ).item()
 
-        avg_loss = (
+        avg_supervised_loss = (
             gathered_interval_loss / gathered_interval_steps
             if gathered_interval_steps > 0
             else float("inf")
         )
 
-        self.fabric.log("train/supervised_loss", avg_loss, step=batch_step)
+        # Aggregate SMLMT loss metrics.
+        gathered_interval_smlmt_loss = self.fabric.all_reduce(
+            interval_smlmt_loss, reduce_op="sum"
+        ).item()
+        gathered_interval_smlmt_steps = self.fabric.all_reduce(
+            interval_smlmt_steps, reduce_op="sum"
+        ).item()
+        avg_smlmt_loss = (
+            gathered_interval_smlmt_loss / gathered_interval_smlmt_steps
+            if gathered_interval_smlmt_steps > 0
+            else float("inf")
+        )
 
+        self.fabric.log("train/supervised_loss", avg_supervised_loss, step=batch_step)
+        self.fabric.log("train/smlmt_loss", avg_smlmt_loss, step=batch_step)
         self.fabric.log(
             "trainer/inf_or_nan_count",
             gathered_interval_inf_or_nan_count,
@@ -752,9 +765,10 @@ class Trainer:
             step=batch_step,
         )
 
-        # Log to console in tree format
+        # Log to console in tree format.
         self.log(f"Step {batch_step} -- 🔄 Training Metrics")
-        self.log(f"├── Loss: {avg_loss:.4f}")
+        self.log(f"├── Supervised Loss: {avg_supervised_loss:.4f}")
+        self.log(f"├── SMLMT Loss: {avg_smlmt_loss:.4f}")
         self.log(f"├── Learning Rate: {self.lr_scheduler.get_last_lr()[0]:.2e}")
         self.log(f"└── Inf/NaN count: {gathered_interval_inf_or_nan_count}")
 
