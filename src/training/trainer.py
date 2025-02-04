@@ -20,6 +20,7 @@ import torch.nn.functional as F
 import os
 from lightning.fabric.utilities.rank_zero import rank_zero_only
 import random
+import higher
 
 from datasets import Dataset, load_dataset
 from typing import Dict, Any
@@ -181,6 +182,16 @@ class Trainer:
 
         # Setup Model, Optimizer, and Dataloaders
         self.model = Pico(model_config=self.configs["model"], fabric=self.fabric)
+        if self.smlmt_enabled:
+            # Create a simple classifier head: maps from d_model to the number of classes.
+            d_model = self.configs["model"].d_model
+            self.maml_classifier = torch.nn.Linear(d_model, self.smlmt_num_classes).to(
+                self.fabric.device
+            )
+            # Add the classifier's parameters to the optimizer.
+            self.optimizer.add_param_group(
+                {"params": self.maml_classifier.parameters()}
+            )
         self.optimizer = initialize_optimizer(
             training_config=self.configs["training"], model=self.model
         )
@@ -491,7 +502,7 @@ class Trainer:
 
             # ---- NEW: Check if we run an SMLMT episode ----
             if self.smlmt_enabled and random.random() < self.smlmt_probability:
-                self.log("SMLMT branch triggered")
+                self.log("MAML SMLMT branch triggered", level=logging.INFO)
 
                 # Generate one SMLMT task (episode)
                 task_generator = SMLMTTask(
@@ -509,6 +520,14 @@ class Trainer:
                 # Tokenize support and query sentences.
                 support_texts = [sent for (sent, _) in support_set]
                 query_texts = [sent for (sent, _) in query_set]
+                # Also get labels.
+                support_labels = torch.tensor(
+                    [label for (_, label) in support_set], device=self.fabric.device
+                )
+                query_labels = torch.tensor(
+                    [label for (_, label) in query_set], device=self.fabric.device
+                )
+
                 support_inputs = self.tokenizer(
                     support_texts, return_tensors="pt", padding=True, truncation=True
                 )
@@ -520,60 +539,57 @@ class Trainer:
                 for key in query_inputs:
                     query_inputs[key] = query_inputs[key].to(self.fabric.device)
 
-                # Forward pass with return_hidden=True to extract features.
-                _, support_hidden, _ = self.model(**support_inputs, return_hidden=True)
-                _, query_hidden, _ = self.model(**query_inputs, return_hidden=True)
-                # Use mean pooling over the sequence dimension.
-                support_repr = support_hidden.mean(dim=1)
-                query_repr = query_hidden.mean(dim=1)
+                # --- MAML inner-loop adaptation ---
+                # Set inner loop hyperparameters (specify these in your config under smlmt, e.g., inner_lr and inner_steps)
+                inner_lr = self.configs["smlmt"].inner_lr  # e.g., 1e-3
+                inner_steps = self.configs["smlmt"].inner_steps  # e.g., 1 or 5
 
-                # Compute prototypes (one per class) from support examples
-                prototypes = []
-                for c in range(self.smlmt_num_classes):
-                    indices = [
-                        i for i, (_, label) in enumerate(support_set) if label == c
-                    ]
-                    if indices:
-                        proto = support_repr[indices].mean(dim=0)
-                    else:
-                        proto = torch.zeros(
-                            support_repr.size(-1), device=support_repr.device
+                # Use higher to create a functional version of the model.
+
+                with higher.innerloop_ctx(
+                    self.model, self.optimizer, copy_initial_weights=True
+                ) as (fmodel, diffopt):
+                    # Perform inner loop updates on the support set.
+                    for _ in range(inner_steps):
+                        # Forward pass on support set with adapted parameters; request hidden states.
+                        support_logits, support_hidden, _ = fmodel(
+                            **support_inputs, return_hidden=True
                         )
-                    prototypes.append(proto)
-                prototypes = torch.stack(prototypes, dim=0)  # (num_classes, d_model)
+                        # For classification, we perform mean pooling over the sequence dimension.
+                        support_repr = support_hidden.mean(
+                            dim=1
+                        )  # shape: (N_support, d_model)
+                        # Pass through the classifier head.
+                        support_preds = self.maml_classifier(support_repr)
+                        support_loss = F.cross_entropy(support_preds, support_labels)
+                        # Update the functional model using the support loss and specified inner_lr.
+                        diffopt.step(support_loss, lr=inner_lr)
 
-                # Compute Euclidean distances from each query representation to prototypes
-                dists = torch.cdist(
-                    query_repr, prototypes, p=2
-                )  # (N_query, num_classes)
-                # Use negative distances as logits
-                logits_smlmt = -dists
-                # Get ground truth labels from query_set
-                query_labels = torch.tensor(
-                    [label for (_, label) in query_set], device=logits_smlmt.device
-                )
-                loss = F.cross_entropy(logits_smlmt, query_labels)
-                interval_smlmt_loss += loss.item()
+                    # Evaluate on the query set using the adapted parameters.
+                    query_logits, query_hidden, _ = fmodel(
+                        **query_inputs, return_hidden=True
+                    )
+                    query_repr = query_hidden.mean(dim=1)
+                    query_preds = self.maml_classifier(query_repr)
+                    query_loss = F.cross_entropy(query_preds, query_labels)
+
+                # The meta loss is the query loss.
+                meta_loss = query_loss
+                interval_smlmt_loss += meta_loss.item()
                 interval_smlmt_steps += 1
 
-                # Backpropagation and optimization for the SMLMT episode
-                self.fabric.backward(loss)
+                # Backpropagate the meta loss (this will backprop through the inner loop)
+                self.fabric.backward(meta_loss)
                 self.optimizer.step()
                 self.optimizer.zero_grad()
                 self.lr_scheduler.step()
 
-                # Log the SMLMT loss
-                self.fabric.log("train/smlmt_loss", loss.item(), step=batch_step)
+                self.fabric.log("train/smlmt_loss", meta_loss.item(), step=batch_step)
                 self.log(
-                    f"Support repr mean: {support_repr.mean().item():.4f}, std: {support_repr.std().item():.4f}",
+                    f"MAML SMLMT meta loss: {meta_loss.item():.4f}", level=logging.INFO
                 )
-                self.log(
-                    f"Prototype[0] norm: {prototypes[0].norm().item():.4f}",
-                )
-
                 batch_step += 1
                 self.log(f"Current batch step: {batch_step}", level=logging.INFO)
-
                 continue  # Skip the rest of this loop; do not process a supervised batch
 
             # ---- END SMLMT branch; continue with existing supervised training ----
