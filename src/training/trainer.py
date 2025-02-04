@@ -115,7 +115,6 @@ class Trainer:
             self.smlmt_num_classes = self.configs["smlmt"].num_classes
             self.smlmt_support = self.configs["smlmt"].support_per_class
             self.smlmt_query = self.configs["smlmt"].query_per_class
-            self.smlmt_vocabulary = self.configs["smlmt"].vocabulary
             print(f"SMLMT enabled with probability {self.smlmt_probability}")
 
             # If sentences are provided in the config, use them; otherwise, extract from train_dataset.
@@ -124,19 +123,28 @@ class Trainer:
             else:
                 self.smlmt_sentences = []
                 max_samples = 1000
-
+                max_seq_len = self.configs["model"].max_seq_len  # e.g., 1024
                 # Check if the dataset supports __len__ and indexing.
                 try:
                     dataset_length = len(self.train_dataset)
                     num_samples = min(max_samples, dataset_length)
-                    for i in range(num_samples):
+                    i = 0
+                    while i <= range(num_samples):
                         example = self.train_dataset[i]
                         if "text" in example:
-                            self.smlmt_sentences.append(example["text"])
+                            tokenized = self.tokenizer.tokenize(example)
+                            if len(tokenized) <= max_seq_len:
+                                self.smlmt_sentences.append(example)
+                                i += 1
                         elif "input_ids" in example:
-                            self.smlmt_sentences.append(
+                            tokenized = self.tokenizer.tokenize(
                                 self.tokenizer.decode(example["input_ids"])
                             )
+                            if len(tokenized) <= max_seq_len:
+                                self.smlmt_sentences.append(
+                                    self.tokenizer.decode(example["input_ids"])
+                                )
+                                i += 1
                 except TypeError:
                     # Fallback for iterable datasets that do not support len() or indexing.
                     samples_collected = 0
@@ -147,13 +155,19 @@ class Trainer:
                         except StopIteration:
                             break
                         if "text" in example:
-                            self.smlmt_sentences.append(example["text"])
-                            samples_collected += 1
+                            tokenized = self.tokenizer.tokenize(example)
+                            if len(tokenized) <= max_seq_len:
+                                self.smlmt_sentences.append(example)
+                                samples_collected += 1
                         elif "input_ids" in example:
-                            self.smlmt_sentences.append(
+                            tokenized = self.tokenizer.tokenize(
                                 self.tokenizer.decode(example["input_ids"])
                             )
-                            samples_collected += 1
+                            if len(tokenized) <= max_seq_len:
+                                self.smlmt_sentences.append(
+                                    self.tokenizer.decode(example["input_ids"])
+                                )
+                                samples_collected += 1
 
             if not self.configs["smlmt"].vocabulary:
                 # For example, sample 100 words from the tokenizer's vocabulary.
@@ -163,7 +177,7 @@ class Trainer:
                     full_vocab, min(100, len(full_vocab))
                 )
             else:
-                self.smlmt_vocabulary = self.configs["smlmt"].get("vocabulary", [])
+                self.smlmt_vocabulary = self.configs["smlmt"].vocabulary
 
         # Setup Model, Optimizer, and Dataloaders
         self.model = Pico(model_config=self.configs["model"], fabric=self.fabric)
