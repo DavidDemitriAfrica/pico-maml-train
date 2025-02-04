@@ -120,6 +120,10 @@ class Trainer:
             self.smlmt_num_classes = self.configs["smlmt"].num_classes
             self.smlmt_support = self.configs["smlmt"].support_per_class
             self.smlmt_query = self.configs["smlmt"].query_per_class
+            self.model.classifier = torch.nn.Linear(
+                self.configs["model"].d_model,
+                self.smlmt_num_classes,
+            ).to(self.fabric.device)
             print(f"SMLMT enabled with probability {self.smlmt_probability}")
 
             # If sentences are provided in the config, use them; otherwise, extract from train_dataset.
@@ -134,7 +138,7 @@ class Trainer:
                     dataset_length = len(self.train_dataset)
                     num_samples = min(max_samples, dataset_length)
                     i = 0
-                    while i <= range(num_samples):
+                    while i < num_samples:
                         example = self.train_dataset[i]
                         if "text" in example:
                             tokenized = self.tokenizer.tokenize(example)
@@ -496,7 +500,6 @@ class Trainer:
 
             # ---- NEW: Check if we run an SMLMT episode ----
             if self.smlmt_enabled and random.random() < self.smlmt_probability:
-                supervised_flag = False
                 self.log("MAML SMLMT branch triggered", level=logging.INFO)
 
                 # Generate one SMLMT task (episode)
@@ -534,9 +537,6 @@ class Trainer:
                 for key in query_inputs:
                     query_inputs[key] = query_inputs[key].to(self.fabric.device)
 
-                # Re-initialize classifier for the MAML episode
-                self.model.reset_classifier(self.smlmt_num_classes)
-
                 # Clone the classifier parameters so we can do the "fast" adaptation
                 fast_params = clone_classifier_params(self.model)
 
@@ -573,24 +573,13 @@ class Trainer:
                 interval_smlmt_loss += meta_loss.item()
                 interval_smlmt_steps += 1
 
-                # Now do the outer (meta) backward pass with Fabric
-                self.fabric.backward(meta_loss)
-                self.optimizer.step()
-                self.optimizer.zero_grad()
-                self.lr_scheduler.step()
-
-                # Logging example
-                interval_smlmt_loss += meta_loss.item()
-                interval_smlmt_steps += 1
                 self.fabric.log("train/smlmt_loss", meta_loss.item(), step=batch_step)
                 self.fabric.log(
                     "train/smlmt_support_loss", support_loss.item(), step=batch_step
                 )
-                batch_step += 1
 
             # ---- END SMLMT branch; continue with existing supervised training ----
             else:
-                supervised_flag = True
                 # (Supervised branch: original code to process sub_batch)
                 _input_ids = torch.tensor(
                     sub_batch["input_ids"], device=self.fabric.device
@@ -635,6 +624,21 @@ class Trainer:
                 else:
                     interval_loss += loss.item()
                     interval_steps += 1
+
+            if self.smlmt_enabled and random.random() < self.smlmt_probability:
+                # 1) Generate MAML meta-loss
+                meta_loss = query_loss
+
+                # 2) Accumulate MAML meta-loss using the same gradient accumulation logic:
+                with self.fabric.no_backward_sync(
+                    self.model, enabled=should_accumulate_gradients
+                ):
+                    self.fabric.backward(
+                        meta_loss
+                        / self.configs[
+                            "training"
+                        ].optimization.gradient_accumulation_steps
+                    )
 
             # NOTE: if we are not accumulating gradients, we should skip the logging and optimization steps
             if should_accumulate_gradients:
@@ -718,12 +722,11 @@ class Trainer:
             #
             ########################################################
 
-            if supervised_flag:
-                self.optimizer.step()
-                self.optimizer.zero_grad()
-                self.lr_scheduler.step()
+            self.optimizer.step()
+            self.optimizer.zero_grad()
+            self.lr_scheduler.step()
 
-                batch_step += 1
+            batch_step += 1
 
             ########################################################
             #

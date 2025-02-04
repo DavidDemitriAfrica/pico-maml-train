@@ -2,7 +2,7 @@ import torch
 from collections import OrderedDict
 import torch.nn as nn
 from typing import Dict, Tuple
-import torch.functional as F
+import torch.nn.functional as F
 
 
 def clone_classifier_params(model: nn.Module) -> OrderedDict:
