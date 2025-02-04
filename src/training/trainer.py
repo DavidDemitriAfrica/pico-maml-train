@@ -456,6 +456,9 @@ class Trainer:
             # ---- NEW: Check if we run an SMLMT episode ----
             if self.smlmt_enabled and random.random() < self.smlmt_probability:
                 self.log("SMLMT branch triggered")
+                interval_smlmt_loss = torch.tensor(0.0, device=self.fabric.device)
+                interval_smlmt_steps = torch.tensor(0, device=self.fabric.device)
+
                 # Generate one SMLMT task (episode)
                 task_generator = SMLMTTask(
                     self.smlmt_sentences,
@@ -516,6 +519,8 @@ class Trainer:
                     [label for (_, label) in query_set], device=logits_smlmt.device
                 )
                 loss = F.cross_entropy(logits_smlmt, query_labels)
+                interval_smlmt_loss += loss.item()
+                interval_smlmt_steps += 1
 
                 # Backpropagation and optimization for the SMLMT episode
                 self.fabric.backward(loss)
@@ -595,6 +600,8 @@ class Trainer:
                     interval_loss=interval_loss,
                     interval_steps=interval_steps,
                     interval_inf_or_nan_count=interval_inf_or_nan_count,
+                    interval_smlmt_loss=interval_smlmt_loss,
+                    interval_smlmt_steps=interval_smlmt_steps,
                     batch_step=batch_step,
                 )
                 interval_loss = torch.tensor(0.0, device=self.fabric.device)
