@@ -115,8 +115,35 @@ class Trainer:
             self.smlmt_num_classes = self.configs["smlmt"].get("num_classes", 3)
             self.smlmt_support = self.configs["smlmt"].get("support_per_class", 2)
             self.smlmt_query = self.configs["smlmt"].get("query_per_class", 2)
-            self.smlmt_sentences = self.configs["smlmt"].get("sentences", [])
+
+            # If sentences are provided in the config, use them; otherwise, extract from train_dataset.
+            if self.configs["smlmt"].get("sentences", []):
+                self.smlmt_sentences = self.configs["smlmt"]["sentences"]
+            else:
+                self.smlmt_sentences = []
+                # Sample up to 1000 sentences from the train dataset.
+                num_samples = min(1000, len(self.train_dataset))
+                for i in range(num_samples):
+                    example = self.train_dataset[i]
+                    if "text" in example:
+                        self.smlmt_sentences.append(example["text"])
+                    elif "input_ids" in example:
+                        # Decode the token ids to text using your tokenizer.
+                        self.smlmt_sentences.append(
+                            self.tokenizer.decode(example["input_ids"])
+                        )
+
+            # Vocabulary can be provided via config. (You might also generate this from the tokenizer.)
             self.smlmt_vocabulary = self.configs["smlmt"].get("vocabulary", [])
+            # Optionally, if no vocabulary is provided, you could pull words from the tokenizer's vocab.
+            if not self.smlmt_vocabulary:
+                # For example, sample 100 words from the tokenizer's vocabulary.
+                full_vocab = list(self.tokenizer.get_vocab().keys())
+                import random
+
+                self.smlmt_vocabulary = random.sample(
+                    full_vocab, min(100, len(full_vocab))
+                )
 
         # Setup Model, Optimizer, and Dataloaders
         self.model = Pico(model_config=self.configs["model"], fabric=self.fabric)
