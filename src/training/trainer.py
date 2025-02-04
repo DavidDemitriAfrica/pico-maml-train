@@ -423,6 +423,8 @@ class Trainer:
         interval_loss = torch.tensor(0.0, device=self.fabric.device)
         interval_steps = torch.tensor(0, device=self.fabric.device)
         interval_inf_or_nan_count = torch.tensor(0, device=self.fabric.device)
+        interval_smlmt_loss = torch.tensor(0.0, device=self.fabric.device)
+        interval_smlmt_steps = torch.tensor(0, device=self.fabric.device)
 
         if self.should_compute_learning_dynamics:
             # NOTE: we basically re-construct the full batch here so that we can compute learning dynamics
@@ -456,8 +458,6 @@ class Trainer:
             # ---- NEW: Check if we run an SMLMT episode ----
             if self.smlmt_enabled and random.random() < self.smlmt_probability:
                 self.log("SMLMT branch triggered")
-                interval_smlmt_loss = torch.tensor(0.0, device=self.fabric.device)
-                interval_smlmt_steps = torch.tensor(0, device=self.fabric.device)
 
                 # Generate one SMLMT task (episode)
                 task_generator = SMLMTTask(
@@ -604,6 +604,8 @@ class Trainer:
                     interval_smlmt_steps=interval_smlmt_steps,
                     batch_step=batch_step,
                 )
+                interval_smlmt_loss = torch.tensor(0.0, device=self.fabric.device)
+                interval_smlmt_steps = torch.tensor(0, device=self.fabric.device)
                 interval_loss = torch.tensor(0.0, device=self.fabric.device)
                 interval_steps = torch.tensor(0, device=self.fabric.device)
                 interval_inf_or_nan_count = torch.tensor(0, device=self.fabric.device)
