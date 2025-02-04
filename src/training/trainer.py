@@ -186,16 +186,6 @@ class Trainer:
         self.optimizer = initialize_optimizer(
             training_config=self.configs["training"], model=self.model
         )
-        if self.smlmt_enabled:
-            # Create a simple classifier head: maps from d_model to the number of classes.
-            d_model = self.configs["model"].d_model
-            self.maml_classifier = torch.nn.Linear(d_model, self.smlmt_num_classes).to(
-                self.fabric.device
-            )
-            # Add the classifier's parameters to the optimizer.
-            self.optimizer.add_param_group(
-                {"params": self.maml_classifier.parameters()}
-            )
         self.lr_scheduler = initialize_lr_scheduler(
             training_config=self.configs["training"], optimizer=self.optimizer
         )
@@ -600,21 +590,19 @@ class Trainer:
                 with higher.innerloop_ctx(
                     self.model, inner_optimizer, copy_initial_weights=True
                 ) as (fmodel, diffopt):
-                    ## REINITIALIZE THE CLASSIFIER TASK HEAD ##
-                    # Perform inner loop updates on the support set.
                     for _ in range(inner_steps):
                         support_logits, support_hidden, _ = fmodel(
                             input_ids=support_inputs["input_ids"],
                             attention_mask=support_inputs["attention_mask"],
                             return_hidden=True,
-                            past_key_values=dummy_past,  # forces attention_mask usage
+                            past_key_values=dummy_past,
                         )
-                        # Mean-pool over sequence dim.
                         support_repr = support_hidden.mean(dim=1)
-                        # Use the classifier head from self.model
                         support_preds = self.model.classifier(support_repr)
                         support_loss = F.cross_entropy(support_preds, support_labels)
-                        diffopt.step(support_loss, lr=inner_lr)
+                        # Disable Fabric's backward hook for this inner loop update:
+                        with self.fabric.no_backward_sync(self.model):
+                            diffopt.step(support_loss, lr=inner_lr)
 
                     # Evaluate on the query set using the adapted parameters.
                     query_logits, query_hidden, _ = fmodel(
