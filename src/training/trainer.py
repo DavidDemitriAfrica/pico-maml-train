@@ -531,12 +531,8 @@ class Trainer:
                 for key in query_inputs:
                     query_inputs[key] = query_inputs[key].to(self.fabric.device)
 
-                # --- NEW: Reinitialize the classifier head as part of the model ---
-                # (We assume Pico has a method .reset_classifier(num_classes))
-                d_model = self.configs["model"].d_model
+                # Re-initialize classifier for the MAML episode
                 self.model.reset_classifier(self.smlmt_num_classes)
-                # Optionally update the optimizer parameter group for the new classifier:
-                # (Here we remove the old group and add the new parameters under a new name)
                 self.optimizer.param_groups = [
                     pg
                     for pg in self.optimizer.param_groups
@@ -549,30 +545,23 @@ class Trainer:
                     }
                 )
 
-                # --- NEW: Create a dummy past_key_values tuple so that Pico uses our attention_mask.
-                # We need one dummy (empty) past for each layer.
+                # Prepare "dummy_past" (empty past_key_values) if your model requires them
                 num_layers = len(self.model.layers)
+                d_model = self.configs["model"].d_model
                 dummy_past = tuple(
                     [
                         (
                             torch.empty(
                                 support_inputs["input_ids"].size(0),
                                 0,
-                                self.configs[
-                                    "model"
-                                ].attention_n_kv_heads,  # <-- use n_kv_heads here
-                                d_model
-                                // self.configs[
-                                    "model"
-                                ].attention_n_heads,  # head_dim remains the same
+                                self.configs["model"].attention_n_kv_heads,
+                                d_model // self.configs["model"].attention_n_heads,
                                 device=self.fabric.device,
                             ),
                             torch.empty(
                                 support_inputs["input_ids"].size(0),
                                 0,
-                                self.configs[
-                                    "model"
-                                ].attention_n_kv_heads,  # <-- use n_kv_heads here
+                                self.configs["model"].attention_n_kv_heads,
                                 d_model // self.configs["model"].attention_n_heads,
                                 device=self.fabric.device,
                             ),
@@ -587,24 +576,38 @@ class Trainer:
                 inner_steps = self.configs["smlmt"].inner_steps  # e.g., 1 or 5
                 inner_optimizer = optim.Adam(self.model.parameters(), lr=inner_lr)
 
+                # Use higher.innerloop_ctx for MAML
                 with higher.innerloop_ctx(
                     self.model, inner_optimizer, copy_initial_weights=True
                 ) as (fmodel, diffopt):
-                    for _ in range(inner_steps):
-                        support_logits, support_hidden, _ = fmodel(
-                            input_ids=support_inputs["input_ids"],
-                            attention_mask=support_inputs["attention_mask"],
-                            return_hidden=True,
-                            past_key_values=dummy_past,
-                        )
-                        support_repr = support_hidden.mean(dim=1)
-                        support_preds = self.model.classifier(support_repr)
-                        support_loss = F.cross_entropy(support_preds, support_labels)
-                        # Disable Fabric's backward hook for this inner loop update:
-                        with self.fabric.no_backward_sync(self.model):
-                            diffopt.step(support_loss, lr=inner_lr)
+                    # Disable Fabric's backward hook during the inner loop
+                    with self.fabric.no_backward_sync(self.model):
+                        for _ in range(inner_steps):
+                            # Forward on support set
+                            support_logits, support_hidden, _ = fmodel(
+                                input_ids=support_inputs["input_ids"],
+                                attention_mask=support_inputs["attention_mask"],
+                                return_hidden=True,
+                                past_key_values=dummy_past,
+                            )
+                            support_repr = support_hidden.mean(dim=1)
+                            support_preds = fmodel.classifier(
+                                support_repr
+                            )  # use fmodel, not self.model
+                            support_loss = F.cross_entropy(
+                                support_preds, support_labels
+                            )
 
-                    # Evaluate on the query set using the adapted parameters.
+                            # Manually compute inner-loop grads
+                            grads = torch.autograd.grad(
+                                support_loss,
+                                list(fmodel.parameters()),
+                                create_graph=True,  # keep graph for meta-update
+                            )
+                            # Apply fast-weight update in higher
+                            diffopt.step(grads, override={"lr": inner_lr})
+
+                    # Evaluate on the query set using the adapted fmodel
                     query_logits, query_hidden, _ = fmodel(
                         input_ids=query_inputs["input_ids"],
                         attention_mask=query_inputs["attention_mask"],
@@ -612,7 +615,7 @@ class Trainer:
                         past_key_values=dummy_past,
                     )
                     query_repr = query_hidden.mean(dim=1)
-                    query_preds = self.model.classifier(query_repr)
+                    query_preds = fmodel.classifier(query_repr)
                     query_loss = F.cross_entropy(query_preds, query_labels)
 
                 # The meta loss is the query loss.
@@ -620,18 +623,18 @@ class Trainer:
                 interval_smlmt_loss += meta_loss.item()
                 interval_smlmt_steps += 1
 
-                # Backpropagate the meta loss (this will backprop through the inner loop)
+                # Now do the outer (meta) backward pass with Fabric
                 self.fabric.backward(meta_loss)
                 self.optimizer.step()
                 self.optimizer.zero_grad()
                 self.lr_scheduler.step()
 
+                # Logging example
+                interval_smlmt_loss += meta_loss.item()
+                interval_smlmt_steps += 1
                 self.fabric.log("train/smlmt_loss", meta_loss.item(), step=batch_step)
-                self.log(
-                    f"MAML SMLMT meta loss: {meta_loss.item():.4f}", level=logging.INFO
-                )
+
                 batch_step += 1
-                self.log(f"Current batch step: {batch_step}", level=logging.INFO)
 
             # ---- END SMLMT branch; continue with existing supervised training ----
             else:
