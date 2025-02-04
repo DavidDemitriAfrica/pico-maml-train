@@ -454,6 +454,8 @@ class Pico(nn.Module):
         self.de_embedding_proj = nn.Linear(
             self.config.d_model, self.config.vocab_size, bias=False
         )
+        # NEW: initialize an (optional) classifier head (for SMLMT/MAML)
+        self.classifier = None
 
     def convert_to_hf_model(self) -> "PicoHF":
         """Convert the Lightning model to a HuggingFace model."""
@@ -552,6 +554,15 @@ class Pico(nn.Module):
             return logits, h, cached_key_values
         else:
             return logits, cached_key_values
+
+    def reset_classifier(self, num_classes: int):
+        """(Re)initialize the classifier head as an nn.Linear mapping from d_model to num_classes.
+        This module is registered as part of self so that Fabric tracks it.
+        """
+        d_model = self.config.d_model
+        self.classifier = torch.nn.Linear(d_model, num_classes).to(
+            self.embedding_proj.weight.device
+        )
 
 
 ########################################################
