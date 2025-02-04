@@ -473,7 +473,7 @@ class Pico(nn.Module):
     def forward(
         self,
         input_ids: torch.Tensor,
-        past_key_values: Optional[Tuple[Tuple[torch.Tensor]]] = None,
+        past_key_values: Optional[Tuple[Tuple[torch.Tensor, torch.Tensor]]] = None,
         use_cache: bool = False,
         return_hidden: bool = False,  # NEW: optional flag for SMLMT
         attention_mask: Optional[torch.Tensor] = None,  # NEW: optional external mask
@@ -494,59 +494,51 @@ class Pico(nn.Module):
         """
         cached_key_values = () if use_cache else None
 
+        batch_size = input_ids.shape[0]
         seq_len = input_ids.shape[-1]
         h = self.embedding_proj(input_ids)
 
-        # Calculate start position from past cached KV pairs. Remember that each layer has its
-        # own KV Cache. So when we index past_key_values, we need to index into the KV pairs for the
-        # correct layer and then for either the keys or values.
         start_pos = 0 if past_key_values is None else past_key_values[0][0].shape[1]
 
-        # Create causal mask for current sequence
         mask = None
         if seq_len > 1:
-            if self.fabric is not None:
-                mask = self.fabric.to_device(
-                    torch.full((seq_len, seq_len), float("-inf"))
-                )
-            else:
-                mask = torch.full((seq_len, seq_len), float("-inf"), device=h.device)
+            # Create a mask with the batch dimension.
+            mask = torch.full(
+                (batch_size, seq_len, seq_len), float("-inf"), device=h.device
+            )
+            # Apply the causal (upper-triangular) mask.
             mask = torch.triu(mask, diagonal=1)
 
-            # If using KV cache, extend mask to cover cached sequence length
             if past_key_values is not None:
-                # Add zeros for cached tokens (we can attend to all of them)
-                mask = torch.hstack(
-                    [torch.zeros((seq_len, start_pos), device=h.device), mask]
-                ).type_as(h)
-                # If an external attention_mask is provided, combine it.
+                # When using cached keys, prepend zeros for the already attended positions.
+                zeros_pad = torch.zeros(
+                    (batch_size, seq_len, start_pos), device=h.device
+                )
+                mask = torch.cat([zeros_pad, mask], dim=-1)
+
                 if attention_mask is not None:
-                    # Convert the attention mask to the same shape as `mask` and adjust its values.
-                    # Typically, attention_mask is 1 for valid tokens and 0 for padding.
-                    # Here we convert it to a float mask where 0 means keep and -inf means mask out.
+                    # Assume attention_mask is of shape (batch_size, total_seq_len)
+                    # Convert it to an additive mask: 0 for keep, -inf for mask.
                     attn_mask = (1 - attention_mask.float()) * float("-inf")
-                    # Ensure the mask has the correct shape: (batch_size, 1, 1, seq_len) if needed,
-                    # and combine it with the causal mask.
-                    # For a simple example, we'll assume a broadcastable shape:
-                    mask = mask + attn_mask[:, None, :]  # adjust as necessary
-                    # NOTE: If we are using the cache, we need to store the cached KV pairs for each layer
-                    #       in a tuple. Each layer will have its own cached KV pair which we aggregate in a tuple.
+                    # Unsqueeze to shape (batch_size, 1, total_seq_len) so that it can be broadcast.
+                    attn_mask = attn_mask.unsqueeze(1)
+                    mask = mask + attn_mask
                     cached_key_values = () if use_cache else None
+            # If you need a 4D mask (for some backends), you could also expand it to:
+            # mask = mask.unsqueeze(1)  # shape becomes (batch_size, 1, seq_len, seq_len)
+        # End mask creation
 
         # Process through transformer blocks
         for idx, layer in enumerate(self.layers):
             layer_past_key_values = (
                 past_key_values[idx] if past_key_values is not None else None
             )
-
             h, layer_cached_key_values = layer(
                 h, mask=mask, past_key_values=layer_past_key_values, use_cache=use_cache
             )
-
             if use_cache:
                 cached_key_values += (layer_cached_key_values,)
 
-        # Final norm and projection
         h = self.output_norm(h)
         logits = self.de_embedding_proj(h).float()
 
