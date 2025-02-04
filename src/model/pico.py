@@ -516,9 +516,9 @@ class Pico(nn.Module):
             # If using KV cache, extend mask to cover cached sequence length
             if past_key_values is not None:
                 # Add zeros for cached tokens (we can attend to all of them)
-                mask = torch.hstack([torch.zeros((seq_len, start_pos)), mask]).type_as(
-                    h
-                )
+                mask = torch.hstack(
+                    [torch.zeros((seq_len, start_pos), device=h.device), mask]
+                ).type_as(h)
                 # If an external attention_mask is provided, combine it.
                 if attention_mask is not None:
                     # Convert the attention mask to the same shape as `mask` and adjust its values.
