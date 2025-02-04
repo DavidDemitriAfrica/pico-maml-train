@@ -86,8 +86,10 @@ class SMLMTTask:
         """
         if sentence is None:
             return ""
+        # Use a default mask token if self.mask_token is None.
+        replacement = self.mask_token if self.mask_token is not None else "[MASK]"
         pattern = r"\b" + re.escape(target_word) + r"\b"
-        return re.sub(pattern, self.mask_token, sentence)
+        return re.sub(pattern, replacement, sentence)
 
     def _contains_word(self, sentence, target_word):
         """
