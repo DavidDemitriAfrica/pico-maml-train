@@ -545,9 +545,7 @@ class Trainer:
                 # Set inner loop hyperparameters (specify these in your config under smlmt, e.g., inner_lr and inner_steps)
                 inner_lr = self.configs["smlmt"].inner_lr  # e.g., 1e-3
                 inner_steps = self.configs["smlmt"].inner_steps  # e.g., 1 or 5
-                inner_optimizer = optim.AdamW(self.model.parameters(), lr=inner_lr)
-
-                # Use higher to create a functional version of the model.
+                inner_optimizer = optim.Adam(self.model.parameters(), lr=inner_lr)
 
                 with higher.innerloop_ctx(
                     self.model, inner_optimizer, copy_initial_weights=True
