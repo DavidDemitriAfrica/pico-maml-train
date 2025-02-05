@@ -153,7 +153,7 @@ class Trainer:
                                     self.tokenizer.decode(example["input_ids"])
                                 )
                                 i += 1
-                except TypeError:
+                except TypeError or AttributeError:
                     # Fallback for iterable datasets that do not support len() or indexing.
                     samples_collected = 0
                     iterator = iter(self.train_dataset)
