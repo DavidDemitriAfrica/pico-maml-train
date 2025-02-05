@@ -113,6 +113,15 @@ class Trainer:
         )
         self.tokenizer = initialize_tokenizer(data_config=self.configs["data"])
 
+        # Setup Model, Optimizer, and Dataloaders
+        self.model = Pico(model_config=self.configs["model"], fabric=self.fabric)
+        self.optimizer = initialize_optimizer(
+            training_config=self.configs["training"], model=self.model
+        )
+        self.lr_scheduler = initialize_lr_scheduler(
+            training_config=self.configs["training"], optimizer=self.optimizer
+        )
+
         # --- Setup SMLMT meta-learning if enabled ---
         self.smlmt_enabled = self.configs["smlmt"].enabled
         if self.smlmt_enabled:
@@ -187,15 +196,6 @@ class Trainer:
                 )
             else:
                 self.smlmt_vocabulary = self.configs["smlmt"].vocabulary
-
-        # Setup Model, Optimizer, and Dataloaders
-        self.model = Pico(model_config=self.configs["model"], fabric=self.fabric)
-        self.optimizer = initialize_optimizer(
-            training_config=self.configs["training"], model=self.model
-        )
-        self.lr_scheduler = initialize_lr_scheduler(
-            training_config=self.configs["training"], optimizer=self.optimizer
-        )
 
         # Wrap with Fabric
         self.model, self.optimizer = self.fabric.setup(self.model, self.optimizer)
