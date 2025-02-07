@@ -17,9 +17,10 @@ import logging
 import lightning as L
 import torch
 import torch.nn.functional as F
+import random
 import os
 from lightning.fabric.utilities.rank_zero import rank_zero_only
-import random
+import learn2learn as l2l
 
 from datasets import Dataset, load_dataset
 from typing import Dict, Any
@@ -38,11 +39,6 @@ from src.training.utils import (
     initialize_experiment_tracker,
     initialize_logging,
     initialize_optimizer,
-)
-from src.training.utils.maml import (
-    maml_inner_update,
-    forward_classifier_with_params,
-    clone_classifier_params,
 )
 from src.checkpointing import (
     load_checkpoint,
@@ -502,15 +498,18 @@ class Trainer:
         for sub_batch_step, sub_batch in enumerate(
             self.train_iterator, start=initial_sub_batch_step
         ):
+            in_smlmt = self.smlmt_enabled and (random.random() < self.smlmt_probability)
             ########################################################
             #
             # Forward Pass
             #
             ########################################################
 
-            # ---- NEW: Check if we run an SMLMT episode ----
-            if self.smlmt_enabled and random.random() < self.smlmt_probability:
+            if in_smlmt:
                 self.log("MAML SMLMT branch triggered", level=logging.INFO)
+
+                inner_lr = self.configs["smlmt"].inner_lr  # e.g., 1e-3
+                inner_steps = self.configs["smlmt"].inner_steps  # e.g., 1 or 5
 
                 # Generate one SMLMT task (episode)
                 task_generator = SMLMTTask(
@@ -528,7 +527,6 @@ class Trainer:
                 # Tokenize support and query sentences.
                 support_texts = [sent for (sent, _) in support_set]
                 query_texts = [sent for (sent, _) in query_set]
-                # Also get labels.
                 support_labels = torch.tensor(
                     [label for (_, label) in support_set], device=self.fabric.device
                 )
@@ -547,42 +545,39 @@ class Trainer:
                 for key in query_inputs:
                     query_inputs[key] = query_inputs[key].to(self.fabric.device)
 
-                # Clone the classifier parameters so we can do the "fast" adaptation
-                fast_params = clone_classifier_params(self.model)
+                # Compute support representations using the (frozen) base model.
+                _, support_hidden, _ = self.model(
+                    support_inputs["input_ids"],
+                    attention_mask=support_inputs["attention_mask"],
+                    return_hidden=True,
+                )
+                support_repr = support_hidden.mean(dim=1)
 
-                # --- MAML inner-loop adaptation ---
-                # Set inner loop hyperparameters (specify these in your config under smlmt, e.g., inner_lr and inner_steps)
-                inner_lr = self.configs["smlmt"].inner_lr  # e.g., 1e-3
-                inner_steps = self.configs["smlmt"].inner_steps  # e.g., 1 or 5
+                # Clone the classifier module using learn2learn.
+                adapted_classifier = l2l.clone_module(self.model.classifier)
 
+                # Run inner-loop adaptation on the support set.
                 for _ in range(inner_steps):
-                    fast_params, support_loss = maml_inner_update(
-                        self.model,
-                        fast_params,
-                        support_inputs,
-                        support_labels,
-                        inner_lr=inner_lr,
-                        create_graph=True,
-                    )
+                    support_preds = adapted_classifier(support_repr)
+                    support_loss = F.cross_entropy(support_preds, support_labels)
+                    adapted_classifier.adapt(support_loss, step_size=inner_lr)
 
-                # Evaluate on the query set using the adapted fmodel
+                # Compute query representations.
                 _, query_hidden, _ = self.model(
                     query_inputs["input_ids"],
                     attention_mask=query_inputs["attention_mask"],
                     return_hidden=True,
                 )
-
                 query_repr = query_hidden.mean(dim=1)
-                query_preds = forward_classifier_with_params(
-                    self.model, query_repr, fast_params
-                )
+
+                # Compute query predictions with the adapted classifier.
+                query_preds = adapted_classifier(query_repr)
                 query_loss = F.cross_entropy(query_preds, query_labels)
 
                 # The meta loss is the query loss.
                 meta_loss = query_loss
                 interval_smlmt_loss += meta_loss.item()
                 interval_smlmt_steps += 1
-
                 self.fabric.log("train/smlmt_loss", meta_loss.item(), step=batch_step)
                 self.fabric.log(
                     "train/smlmt_support_loss", support_loss.item(), step=batch_step
@@ -635,7 +630,7 @@ class Trainer:
                     interval_loss += loss.item()
                     interval_steps += 1
 
-            if self.smlmt_enabled and random.random() < self.smlmt_probability:
+            if in_smlmt:
                 # 1) Generate MAML meta-loss
                 meta_loss = query_loss
 
