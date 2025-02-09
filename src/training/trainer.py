@@ -113,6 +113,37 @@ class Trainer:
 
         ########################################################
         #
+        # Boilerplate to deal with loading/resuming from checkpoints
+        #
+        ########################################################
+
+        self.should_load_checkpoint = self.configs["checkpointing"].training.auto_resume
+
+        # Possibly load a checkpoint
+        if self.should_load_checkpoint:
+            resume_checkpoint = load_checkpoint(
+                checkpointing_config=self.configs["checkpointing"],
+                checkpoint_step="latest",
+                fabric=self.fabric,
+                model=self.model,
+                optimizer=self.optimizer,
+                lr_scheduler=self.lr_scheduler,
+            )
+
+            if resume_checkpoint:
+                (
+                    self.model,
+                    self.optimizer,
+                    self.lr_scheduler,
+                    self.initial_batch_step,
+                ) = resume_checkpoint
+            else:
+                self.initial_batch_step = 0
+        else:
+            self.initial_batch_step = 0
+
+        ########################################################
+        #
         # Initialization of Dataset & DataLoader (possibly fast-forwarding to correct batch)
         #
         ########################################################
@@ -216,37 +247,6 @@ class Trainer:
             initialize_hf_checkpointing(
                 checkpointing_config=self.configs["checkpointing"], fabric=self.fabric
             )
-
-        ########################################################
-        #
-        # Boilerplate to deal with loading/resuming from checkpoints
-        #
-        ########################################################
-
-        self.should_load_checkpoint = self.configs["checkpointing"].training.auto_resume
-
-        # Possibly load a checkpoint
-        if self.should_load_checkpoint:
-            resume_checkpoint = load_checkpoint(
-                checkpointing_config=self.configs["checkpointing"],
-                checkpoint_step="latest",
-                fabric=self.fabric,
-                model=self.model,
-                optimizer=self.optimizer,
-                lr_scheduler=self.lr_scheduler,
-            )
-
-            if resume_checkpoint:
-                (
-                    self.model,
-                    self.optimizer,
-                    self.lr_scheduler,
-                    self.initial_batch_step,
-                ) = resume_checkpoint
-            else:
-                self.initial_batch_step = 0
-        else:
-            self.initial_batch_step = 0
 
         # NOTE: We may need to fast-forward the iterator to the correct step so that we can
         # continue from the correct batch of data we would have seen had training not
