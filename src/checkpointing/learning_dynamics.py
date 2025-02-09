@@ -11,6 +11,7 @@ import torch.optim as optim
 from torch.nn import functional as F
 from torch.utils.data import DataLoader
 from huggingface_hub import upload_folder
+import logging
 
 import deepspeed
 
@@ -198,6 +199,17 @@ class CheckpointStateExtractor:
 
         def _forward_hook(module, _, module_out):
             sequence_idx = self.learning_dynamics_config.sequence_idx
+
+            # If the configured index is out of bounds, clamp it to the maximum valid index.
+            if sequence_idx >= module_out.shape[1]:
+                # Option 1: Use the last token's activations.
+                clamped_idx = module_out.shape[1] - 1
+                self.fabric.log(
+                    f"Warning: configured sequence_idx ({sequence_idx}) is out of bounds for module {module_name} "
+                    f"(max index is {module_out.shape[1]-1}). Using {clamped_idx} instead.",
+                    level=logging.WARNING,
+                )
+                sequence_idx = clamped_idx
 
             local_activations = module_out[:, sequence_idx, :].detach()
 
