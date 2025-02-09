@@ -108,6 +108,34 @@ class Trainer:
             training_config=self.configs["training"], optimizer=self.optimizer
         )
 
+        # Wrap with Fabric
+        self.model, self.optimizer = self.fabric.setup(self.model, self.optimizer)
+
+        ########################################################
+        #
+        # Initialization of Dataset & DataLoader (possibly fast-forwarding to correct batch)
+        #
+        ########################################################
+
+        self.train_dataset, fast_forward_steps = initialize_dataset(
+            data_config=self.configs["data"],
+            fabric=self.fabric,
+            initial_batch_step=self.initial_batch_step,
+            return_fast_forward_steps=True,
+        )
+
+        self.train_dataloader = initialize_dataloader(
+            data_config=self.configs["data"],
+            training_config=self.configs["training"],
+            fabric=self.fabric,
+            dataset=self.train_dataset,
+        )
+        self.train_dataloader = self.fabric.setup_dataloaders(
+            self.train_dataloader, use_distributed_sampler=False
+        )
+
+        self.tokenizer = initialize_tokenizer(data_config=self.configs["data"])
+
         # --- Setup SMLMT meta-learning if enabled ---
         self.smlmt_enabled = self.configs["smlmt"].enabled
         if self.smlmt_enabled:
@@ -183,9 +211,6 @@ class Trainer:
             else:
                 self.smlmt_vocabulary = self.configs["smlmt"].vocabulary
 
-        # Wrap with Fabric
-        self.model, self.optimizer = self.fabric.setup(self.model, self.optimizer)
-
         # Setup HuggingFace Checkpointing
         if self.configs["checkpointing"].save_checkpoint_repo_id is not None:
             initialize_hf_checkpointing(
@@ -222,31 +247,6 @@ class Trainer:
                 self.initial_batch_step = 0
         else:
             self.initial_batch_step = 0
-
-        ########################################################
-        #
-        # Initialization of Dataset & DataLoader (possibly fast-forwarding to correct batch)
-        #
-        ########################################################
-
-        self.train_dataset, fast_forward_steps = initialize_dataset(
-            data_config=self.configs["data"],
-            fabric=self.fabric,
-            initial_batch_step=self.initial_batch_step,
-            return_fast_forward_steps=True,
-        )
-
-        self.train_dataloader = initialize_dataloader(
-            data_config=self.configs["data"],
-            training_config=self.configs["training"],
-            fabric=self.fabric,
-            dataset=self.train_dataset,
-        )
-        self.train_dataloader = self.fabric.setup_dataloaders(
-            self.train_dataloader, use_distributed_sampler=False
-        )
-
-        self.tokenizer = initialize_tokenizer(data_config=self.configs["data"])
 
         # NOTE: We may need to fast-forward the iterator to the correct step so that we can
         # continue from the correct batch of data we would have seen had training not
