@@ -117,7 +117,7 @@ class Trainer:
             self.smlmt_query = self.configs["smlmt"].query_per_class
             self.model.classifier = torch.nn.Linear(
                 self.configs["model"].d_model, self.smlmt_num_classes
-            ).to(self.fabric.device)
+            )
             print(f"SMLMT enabled with probability {self.smlmt_probability}")
 
         # Wrap with Fabric
