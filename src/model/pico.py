@@ -461,12 +461,19 @@ class Pico(nn.Module):
         """Convert the Lightning model to a HuggingFace model."""
         # Create HF config without fabric-specific settings
         hf_config = PicoHFConfig.from_dataclass(self.config)
-
-        # Create new HF model
+        # Create a new HF model
         hf_model = PicoHF(hf_config)
 
-        # Copy state dict, excluding fabric-specific keys
-        hf_model.load_state_dict(self.state_dict(prefix="pico."))
+        # Get the state dict with the "pico." prefix
+        state_dict = self.state_dict(prefix="pico.")
+        # Filter out keys related to the classifier head.
+        filtered_state_dict = {
+            k: v for k, v in state_dict.items() if not k.startswith("classifier")
+        }
+
+        # Load the filtered state dict into the hf_model.
+        # Use strict=False so that missing keys (the classifier) are ignored.
+        hf_model.load_state_dict(filtered_state_dict, strict=False)
 
         return hf_model
 
