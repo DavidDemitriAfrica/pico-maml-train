@@ -277,9 +277,15 @@ def compute_learning_dynamics_states(
         extractor_dataloader, use_distributed_sampler=True
     )
 
-    # Create a new model instance with same parameters but zero gradients
+    # Create a new model instance with the same parameters but zero gradients.
     _model = Pico(model.config, fabric=fabric)
-    _model.load_state_dict(model.state_dict())
+    # Get the full state dict from the current model.
+    state_dict = model.state_dict()
+    # Filter out keys that start with 'classifier'.
+    filtered_state = {
+        k: v for k, v in state_dict.items() if not k.startswith("classifier")
+    }
+    _model.load_state_dict(filtered_state)
 
     if isinstance(fabric.strategy, DeepSpeedStrategy):
         _model, _ = fabric.setup(_model, DummyOptimizer(_model.parameters()))
