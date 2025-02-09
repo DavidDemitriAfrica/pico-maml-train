@@ -185,28 +185,27 @@ class Trainer:
                 self.smlmt_sentences = []
                 max_samples = 1000
                 max_seq_len = self.configs["model"].max_seq_len  # e.g., 1024
-                # Check if the dataset supports __len__ and indexing.
+                # Try using indexing if the dataset supports __len__ and __getitem__
                 try:
                     dataset_length = len(self.train_dataset)
-                    num_samples = min(max_samples, dataset_length)
-                    i = 0
-                    while i < num_samples:
+                    collected = 0
+                    for i in range(dataset_length):
                         example = self.train_dataset[i]
                         if "text" in example:
                             tokenized = self.tokenizer.tokenize(example)
                             if len(tokenized) <= max_seq_len:
                                 self.smlmt_sentences.append(example)
-                                i += 1
+                                collected += 1
                         elif "input_ids" in example:
-                            tokenized = self.tokenizer.tokenize(
-                                self.tokenizer.decode(example["input_ids"])
-                            )
+                            decoded = self.tokenizer.decode(example["input_ids"])
+                            tokenized = self.tokenizer.tokenize(decoded)
                             if len(tokenized) <= max_seq_len:
-                                self.smlmt_sentences.append(
-                                    self.tokenizer.decode(example["input_ids"])
-                                )
-                                i += 1
-                except TypeError or AttributeError:
+                                self.smlmt_sentences.append(decoded)
+                                collected += 1
+                        # Stop once we've collected enough valid sequences.
+                        if collected >= max_samples:
+                            break
+                except (TypeError, AttributeError):
                     # Fallback for iterable datasets that do not support len() or indexing.
                     samples_collected = 0
                     iterator = iter(self.train_dataset)
@@ -221,19 +220,15 @@ class Trainer:
                                 self.smlmt_sentences.append(example)
                                 samples_collected += 1
                         elif "input_ids" in example:
-                            tokenized = self.tokenizer.tokenize(
-                                self.tokenizer.decode(example["input_ids"])
-                            )
+                            decoded = self.tokenizer.decode(example["input_ids"])
+                            tokenized = self.tokenizer.tokenize(decoded)
                             if len(tokenized) <= max_seq_len:
-                                self.smlmt_sentences.append(
-                                    self.tokenizer.decode(example["input_ids"])
-                                )
+                                self.smlmt_sentences.append(decoded)
                                 samples_collected += 1
 
             if not self.configs["smlmt"].vocabulary:
                 # For example, sample 100 words from the tokenizer's vocabulary.
                 full_vocab = list(self.tokenizer.get_vocab().keys())
-
                 self.smlmt_vocabulary = random.sample(
                     full_vocab, min(100, len(full_vocab))
                 )
@@ -552,34 +547,31 @@ class Trainer:
                 classifier_optimizer = torch.optim.SGD(
                     self.model.classifier.parameters(), lr=inner_lr
                 )
-                with torch.amp.autocast(enabled=False):
-                    with higher.innerloop_ctx(
-                        self.model.classifier,
-                        classifier_optimizer,
-                        copy_initial_weights=True,
-                    ) as (fclassifier, diffopt):
-                        for _ in range(inner_steps):
-                            _, support_hidden, _ = self.model(
-                                support_inputs["input_ids"],
-                                attention_mask=support_inputs["attention_mask"],
-                                return_hidden=True,
-                            )
-                            support_repr = support_hidden.mean(dim=1)
-                            support_preds = fclassifier(support_repr)
-                            support_loss = F.cross_entropy(
-                                support_preds, support_labels
-                            )
-                            diffopt.step(support_loss)
-
-                        # Evaluate on the query set.
-                        _, query_hidden, _ = self.model(
-                            query_inputs["input_ids"],
-                            attention_mask=query_inputs["attention_mask"],
+                with higher.innerloop_ctx(
+                    self.model.classifier,
+                    classifier_optimizer,
+                    copy_initial_weights=True,
+                ) as (fclassifier, diffopt):
+                    for _ in range(inner_steps):
+                        _, support_hidden, _ = self.model(
+                            support_inputs["input_ids"],
+                            attention_mask=support_inputs["attention_mask"],
                             return_hidden=True,
                         )
-                        query_repr = query_hidden.mean(dim=1)
-                        query_preds = fclassifier(query_repr)
-                        meta_loss = F.cross_entropy(query_preds, query_labels)
+                        support_repr = support_hidden.mean(dim=1)
+                        support_preds = fclassifier(support_repr)
+                        support_loss = F.cross_entropy(support_preds, support_labels)
+                        diffopt.step(support_loss)
+
+                    # Evaluate on the query set.
+                    _, query_hidden, _ = self.model(
+                        query_inputs["input_ids"],
+                        attention_mask=query_inputs["attention_mask"],
+                        return_hidden=True,
+                    )
+                    query_repr = query_hidden.mean(dim=1)
+                    query_preds = fclassifier(query_repr)
+                    meta_loss = F.cross_entropy(query_preds, query_labels)
 
                 interval_smlmt_loss += meta_loss.item()
                 interval_smlmt_steps += 1
