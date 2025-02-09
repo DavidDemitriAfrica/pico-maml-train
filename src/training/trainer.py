@@ -108,6 +108,18 @@ class Trainer:
             training_config=self.configs["training"], optimizer=self.optimizer
         )
 
+        # 3. If SMLMT is enabled, instantiate the classifier (so model.state_dict has its keys).
+        self.smlmt_enabled = self.configs["smlmt"].enabled
+        if self.smlmt_enabled:
+            self.smlmt_probability = self.configs["smlmt"].probability
+            self.smlmt_num_classes = self.configs["smlmt"].num_classes
+            self.smlmt_support = self.configs["smlmt"].support_per_class
+            self.smlmt_query = self.configs["smlmt"].query_per_class
+            self.model.classifier = torch.nn.Linear(
+                self.configs["model"].d_model, self.smlmt_num_classes
+            ).to(self.fabric.device)
+            print(f"SMLMT enabled with probability {self.smlmt_probability}")
+
         # Wrap with Fabric
         self.model, self.optimizer = self.fabric.setup(self.model, self.optimizer)
 
@@ -154,7 +166,6 @@ class Trainer:
             initial_batch_step=self.initial_batch_step,
             return_fast_forward_steps=True,
         )
-
         self.train_dataloader = initialize_dataloader(
             data_config=self.configs["data"],
             training_config=self.configs["training"],
@@ -164,22 +175,9 @@ class Trainer:
         self.train_dataloader = self.fabric.setup_dataloaders(
             self.train_dataloader, use_distributed_sampler=False
         )
-
         self.tokenizer = initialize_tokenizer(data_config=self.configs["data"])
 
-        # --- Setup SMLMT meta-learning if enabled ---
-        self.smlmt_enabled = self.configs["smlmt"].enabled
         if self.smlmt_enabled:
-            self.smlmt_probability = self.configs["smlmt"].probability
-            self.smlmt_num_classes = self.configs["smlmt"].num_classes
-            self.smlmt_support = self.configs["smlmt"].support_per_class
-            self.smlmt_query = self.configs["smlmt"].query_per_class
-            self.model.classifier = torch.nn.Linear(
-                self.configs["model"].d_model,
-                self.smlmt_num_classes,
-            ).to(self.fabric.device)
-            print(f"SMLMT enabled with probability {self.smlmt_probability}")
-
             # If sentences are provided in the config, use them; otherwise, extract from train_dataset.
             if self.configs["smlmt"].sentences:
                 self.smlmt_sentences = self.configs["smlmt"]["sentences"]
