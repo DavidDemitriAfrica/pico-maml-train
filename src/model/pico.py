@@ -345,7 +345,7 @@ class Attention(nn.Module):
 class SwiGLU(nn.Module):
     """SwiGLU Activation Function with Linear Projections.
 
-    Implements the SwiGLU activation function combined with linear transformations,
+    Implements the SwiGLU activation f  unction combined with linear transformations,
     serving as the feed-forward network in transformer blocks.
 
     Args:
@@ -609,6 +609,8 @@ class PicoHF(PreTrainedModel):
     def __init__(self, config: PicoHFConfig):
         super().__init__(config)
         self.pico = Pico(config)
+        if hasattr(self.pico, "classifier") and self.pico.classifier is not None:
+            self.pico.classifier = torch.nn.Linear(config.d_model, config.num_classes)
 
     def forward(
         self,
