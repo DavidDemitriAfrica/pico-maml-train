@@ -38,11 +38,6 @@ from src.training.utils import (
     initialize_logging,
     initialize_optimizer,
 )
-from src.training.utils.maml import (
-    maml_inner_update,
-    forward_classifier_with_params,
-    clone_classifier_params,
-)
 from src.checkpointing import (
     load_checkpoint,
     save_checkpoint,
@@ -52,6 +47,8 @@ from src.checkpointing import (
 )
 
 from src.evaluation import run_evaluation
+
+import higher
 
 
 class Trainer:
@@ -546,36 +543,41 @@ class Trainer:
                 for key in query_inputs:
                     query_inputs[key] = query_inputs[key].to(self.fabric.device)
 
-                # Clone the classifier parameters so we can do the "fast" adaptation
-                fast_params = clone_classifier_params(self.model)
-
                 # --- MAML inner-loop adaptation ---
                 # Set inner loop hyperparameters (specify these in your config under smlmt, e.g., inner_lr and inner_steps)
                 inner_lr = self.configs["smlmt"].inner_lr  # e.g., 1e-3
                 inner_steps = self.configs["smlmt"].inner_steps  # e.g., 1 or 5
 
-                for _ in range(inner_steps):
-                    fast_params, support_loss = maml_inner_update(
-                        self.model,
-                        fast_params,
-                        support_inputs,
-                        support_labels,
-                        inner_lr=inner_lr,
-                        create_graph=True,
+                classifier_optimizer = torch.optim.SGD(
+                    self.model.classifier.parameters(), lr=inner_lr
+                )
+                with higher.innerloop_ctx(
+                    self.model.classifier,
+                    classifier_optimizer,
+                    copy_initial_weights=True,
+                ) as (fclassifier, diffopt):
+                    for _ in range(inner_steps):
+                        # Forward pass on the support set.
+                        # We assume self.model returns (logits, hidden, ...) when return_hidden=True.
+                        _, support_hidden, _ = self.model(
+                            support_inputs["input_ids"],
+                            attention_mask=support_inputs["attention_mask"],
+                            return_hidden=True,
+                        )
+                        support_repr = support_hidden.mean(dim=1)
+                        support_preds = fclassifier(support_repr)
+                        support_loss = F.cross_entropy(support_preds, support_labels)
+                        diffopt.step(support_loss)
+
+                    # Evaluate the adapted classifier on the query set.
+                    _, query_hidden, _ = self.model(
+                        query_inputs["input_ids"],
+                        attention_mask=query_inputs["attention_mask"],
+                        return_hidden=True,
                     )
-
-                # Evaluate on the query set using the adapted fmodel
-                _, query_hidden, _ = self.model(
-                    query_inputs["input_ids"],
-                    attention_mask=query_inputs["attention_mask"],
-                    return_hidden=True,
-                )
-
-                query_repr = query_hidden.mean(dim=1)
-                query_preds = forward_classifier_with_params(
-                    self.model, query_repr, fast_params
-                )
-                query_loss = F.cross_entropy(query_preds, query_labels)
+                    query_repr = query_hidden.mean(dim=1)
+                    query_preds = fclassifier(query_repr)
+                    query_loss = F.cross_entropy(query_preds, query_labels)
 
                 # The meta loss is the query loss.
                 meta_loss = query_loss
@@ -583,9 +585,6 @@ class Trainer:
                 interval_smlmt_steps += 1
 
                 self.fabric.log("train/smlmt_loss", meta_loss.item(), step=batch_step)
-                self.fabric.log(
-                    "train/smlmt_support_loss", support_loss.item(), step=batch_step
-                )
 
             # ---- END SMLMT branch; continue with existing supervised training ----
             else:
