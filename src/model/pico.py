@@ -618,12 +618,7 @@ class PicoHF(PreTrainedModel):
         past_key_values: Optional[Tuple[Tuple[torch.Tensor]]] = None,
         use_cache: bool = False,
         **kwargs,
-    ) -> Union[CausalLMOutput, CausalLMOutputWithPast]:
-        """HuggingFace forward pass wrapper.
-
-        Forwards pass for the HuggingFace version of the Pico Model. Basic wrapper around the
-        Pico model's forward pass, and returns the output as a HuggingFace CausalLMOutput.
-        """
+    ):
         logits, past_key_values = self.pico(input_ids, past_key_values, use_cache)
         if use_cache:
             return CausalLMOutputWithPast(
