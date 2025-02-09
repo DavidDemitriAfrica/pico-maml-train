@@ -467,45 +467,50 @@ class Trainer:
         # Setup training loop variables
         batch_step = self.initial_batch_step
 
-        # NOTE: these are used to compute the average loss over a training interval.
-        # This is more accurate than using the loss at the end of the interval.
-        interval_loss = torch.tensor(0.0, device=self.fabric.device)
+        # Interval accumulators for logging
+        interval_loss = torch.tensor(0.0, device=self.fabric.device)  # supervised loss
         interval_steps = torch.tensor(0, device=self.fabric.device)
         interval_inf_or_nan_count = torch.tensor(0, device=self.fabric.device)
-        interval_smlmt_loss = torch.tensor(0.0, device=self.fabric.device)
+        interval_smlmt_loss = torch.tensor(0.0, device=self.fabric.device)  # meta loss
         interval_smlmt_steps = torch.tensor(0, device=self.fabric.device)
 
         if self.should_compute_learning_dynamics:
-            # NOTE: we basically re-construct the full batch here so that we can compute learning dynamics
             training_batch = {"input_ids": []}
 
-        # NOTE: determine what sub-batch we should start from
+        # Determine starting sub-batch step from gradient accumulation.
         initial_sub_batch_step = (
             batch_step
             * self.configs["training"].optimization.gradient_accumulation_steps
         )
 
         ###############################################################
-        #
-        # Core loop starts here
-        # NOTE: the ratio between sub_batch_step and batch_step
-        # is the configured number of gradient_accumulation_steps
-        # i.e. with 32 configured gradient accumulation steps,
-        # there are 32 sub_batch_steps for each batch_step
-        #
+        # Main Training Loop
         ###############################################################
-
         for sub_batch_step, sub_batch in enumerate(
             self.train_iterator, start=initial_sub_batch_step
         ):
-            in_smlmt = self.smlmt_enabled and (random.random() < self.smlmt_probability)
-            ########################################################
-            #
-            # Forward Pass
-            #
-            ########################################################
+            # --- 1. Supervised Branch (always computed) ---
+            _input_ids = torch.tensor(sub_batch["input_ids"], device=self.fabric.device)
+            input_ids = _input_ids[:, :-1]
+            labels = _input_ids[:, 1:]
 
-            if in_smlmt:
+            # Optionally, store training batch for learning dynamics.
+            if self.should_compute_learning_dynamics:
+                gathered_input_ids = self.fabric.all_gather(_input_ids)
+                if self.fabric.world_size > 1:
+                    gathered_input_ids = gathered_input_ids.reshape(
+                        -1, *gathered_input_ids.shape[2:]
+                    )
+                training_batch["input_ids"].extend(gathered_input_ids.tolist())
+
+            # Forward pass for supervised loss.
+            model_output, _ = self.model(input_ids)
+            model_output = model_output.transpose(1, 2)
+            supervised_loss = F.cross_entropy(model_output, labels)
+
+            # --- 2. Optional MAML (SMLMT) Meta–Loss ---
+            meta_loss = None
+            if self.smlmt_enabled and (random.random() < self.smlmt_probability):
                 self.log("MAML SMLMT branch triggered", level=logging.INFO)
 
                 # Generate one SMLMT task (episode)
@@ -521,10 +526,9 @@ class Trainer:
                 )
                 support_set, query_set = task_generator.generate_task()
 
-                # Tokenize support and query sentences.
+                # Tokenize support and query sentences and obtain labels.
                 support_texts = [sent for (sent, _) in support_set]
                 query_texts = [sent for (sent, _) in query_set]
-                # Also get labels.
                 support_labels = torch.tensor(
                     [label for (_, label) in support_set], device=self.fabric.device
                 )
@@ -543,8 +547,7 @@ class Trainer:
                 for key in query_inputs:
                     query_inputs[key] = query_inputs[key].to(self.fabric.device)
 
-                # --- MAML inner-loop adaptation ---
-                # Set inner loop hyperparameters (specify these in your config under smlmt, e.g., inner_lr and inner_steps)
+                # Set inner loop hyperparameters.
                 inner_lr = self.configs["smlmt"].inner_lr  # e.g., 1e-3
                 inner_steps = self.configs["smlmt"].inner_steps  # e.g., 1 or 5
 
@@ -557,8 +560,6 @@ class Trainer:
                     copy_initial_weights=True,
                 ) as (fclassifier, diffopt):
                     for _ in range(inner_steps):
-                        # Forward pass on the support set.
-                        # We assume self.model returns (logits, hidden, ...) when return_hidden=True.
                         _, support_hidden, _ = self.model(
                             support_inputs["input_ids"],
                             attention_mask=support_inputs["attention_mask"],
@@ -569,7 +570,7 @@ class Trainer:
                         support_loss = F.cross_entropy(support_preds, support_labels)
                         diffopt.step(support_loss)
 
-                    # Evaluate the adapted classifier on the query set.
+                    # Evaluate on the query set.
                     _, query_hidden, _ = self.model(
                         query_inputs["input_ids"],
                         attention_mask=query_inputs["attention_mask"],
@@ -577,41 +578,17 @@ class Trainer:
                     )
                     query_repr = query_hidden.mean(dim=1)
                     query_preds = fclassifier(query_repr)
-                    query_loss = F.cross_entropy(query_preds, query_labels)
+                    meta_loss = F.cross_entropy(query_preds, query_labels)
 
-                # The meta loss is the query loss.
-                meta_loss = query_loss
                 interval_smlmt_loss += meta_loss.item()
                 interval_smlmt_steps += 1
-
                 self.fabric.log("train/smlmt_loss", meta_loss.item(), step=batch_step)
 
-            # ---- END SMLMT branch; continue with existing supervised training ----
-            else:
-                # (Supervised branch: original code to process sub_batch)
-                _input_ids = torch.tensor(
-                    sub_batch["input_ids"], device=self.fabric.device
-                )
-                input_ids = _input_ids[:, :-1]
-                labels = _input_ids[:, 1:]
-                # (Optionally store the training batch if learning dynamics is enabled)
-                if self.should_compute_learning_dynamics:
-                    gathered_input_ids = self.fabric.all_gather(_input_ids)
-                    if self.fabric.world_size > 1:
-                        gathered_input_ids = gathered_input_ids.reshape(
-                            -1, *gathered_input_ids.shape[2:]
-                        )
-                    training_batch["input_ids"].extend(gathered_input_ids.tolist())
-
-                # Forward pass
-                model_output, _ = self.model(input_ids)
-                model_output = model_output.transpose(1, 2)
-
-            ########################################################
-            #
-            # Gradient accumulation
-            #
-            ########################################################
+            # --- 3. Gradient Accumulation: Combine Losses and Backward ---
+            # Here, we add the losses (if meta_loss is computed) so that gradients flow from both.
+            total_loss = supervised_loss
+            if meta_loss is not None:
+                total_loss = total_loss + meta_loss
 
             should_accumulate_gradients = (sub_batch_step + 1) % self.configs[
                 "training"
@@ -620,44 +597,24 @@ class Trainer:
             with self.fabric.no_backward_sync(
                 self.model, enabled=should_accumulate_gradients
             ):
-                loss = F.cross_entropy(model_output, labels)
                 self.fabric.backward(
-                    loss
+                    total_loss
                     / self.configs["training"].optimization.gradient_accumulation_steps,
                     model=self.model,
                 )
-
-                if torch.isnan(loss) or torch.isinf(loss):
+                if torch.isnan(total_loss) or torch.isinf(total_loss):
                     interval_inf_or_nan_count += 1
                 else:
-                    interval_loss += loss.item()
+                    interval_loss += (
+                        supervised_loss.item()
+                    )  # accumulate supervised loss
                     interval_steps += 1
 
-            if in_smlmt:
-                # 1) Generate MAML meta-loss
-                meta_loss = query_loss
-
-                # 2) Accumulate MAML meta-loss using the same gradient accumulation logic:
-                with self.fabric.no_backward_sync(
-                    self.model, enabled=should_accumulate_gradients
-                ):
-                    self.fabric.backward(
-                        meta_loss
-                        / self.configs[
-                            "training"
-                        ].optimization.gradient_accumulation_steps
-                    )
-
-            # NOTE: if we are not accumulating gradients, we should skip the logging and optimization steps
+            # If we're still accumulating gradients, skip the optimizer step.
             if should_accumulate_gradients:
                 continue
 
-            ########################################################
-            #
-            # Logging
-            #
-            ########################################################
-
+            # --- 4. Logging ---
             if batch_step % self.configs["monitoring"].logging.log_every_n_steps == 0:
                 self._log_training_metrics(
                     interval_loss=interval_loss,
@@ -667,25 +624,18 @@ class Trainer:
                     interval_smlmt_steps=interval_smlmt_steps,
                     batch_step=batch_step,
                 )
+                # Reset interval accumulators.
                 interval_smlmt_loss = torch.tensor(0.0, device=self.fabric.device)
                 interval_smlmt_steps = torch.tensor(0, device=self.fabric.device)
                 interval_loss = torch.tensor(0.0, device=self.fabric.device)
                 interval_steps = torch.tensor(0, device=self.fabric.device)
                 interval_inf_or_nan_count = torch.tensor(0, device=self.fabric.device)
 
-            ########################################################
-            #
-            # Learning Dynamics Checkpointing
-            #
-            ########################################################
-
+            # --- 5. Learning Dynamics Checkpointing ---
             if batch_step % self.configs["checkpointing"].save_every_n_steps == 0:
                 if self.should_compute_learning_dynamics:
                     self.log(f"Step {batch_step} -- 📈 Saving Learning Dynamics")
-
-                    # Training Batch Learning Dynamics
                     training_batch_dataset = Dataset.from_dict(training_batch)
-
                     learning_dynamics_train_states = compute_learning_dynamics_states(
                         checkpointing_config=self.configs["checkpointing"],
                         fabric=self.fabric,
@@ -693,7 +643,6 @@ class Trainer:
                         dataset=training_batch_dataset,
                         compute_gradients=True,
                     )
-
                     save_learning_dynamics_states(
                         checkpointing_config=self.configs["checkpointing"],
                         checkpoint_step=batch_step,
@@ -703,11 +652,9 @@ class Trainer:
                         learning_dynamics_dataset=training_batch_dataset,
                         tokenizer=self.tokenizer,
                     )
-                    training_batch = {
-                        "input_ids": []
-                    }  # Resetting training_batch for next training batch
+                    training_batch = {"input_ids": []}  # Reset for next batch
 
-                    # Validation Data Learning Dynamics
+                    # Also save validation learning dynamics if available.
                     if self.learning_dynamics_eval_dataset is not None:
                         learning_dynamics_val_states = compute_learning_dynamics_states(
                             checkpointing_config=self.configs["checkpointing"],
@@ -724,24 +671,14 @@ class Trainer:
                             learning_dynamics_states=learning_dynamics_val_states,
                         )
 
-            ########################################################
-            #
-            # Optimization step
-            #
-            ########################################################
-
+            # --- 6. Optimization Step ---
             self.optimizer.step()
             self.optimizer.zero_grad()
             self.lr_scheduler.step()
 
             batch_step += 1
 
-            ########################################################
-            #
-            # Training Checkpointing and evaluation
-            #
-            ########################################################
-
+            # --- 7. Checkpointing and Evaluation ---
             if batch_step % self.configs["checkpointing"].save_every_n_steps == 0:
                 self.log(f"Step {batch_step} -- 💾 Saving Checkpoint")
                 save_checkpoint(
@@ -753,7 +690,6 @@ class Trainer:
                     lr_scheduler=self.lr_scheduler,
                     tokenizer=self.tokenizer,
                 )
-
                 if self.should_evaluate:
                     evaluation_results = run_evaluation(
                         evaluation_config=self.configs["evaluation"],
@@ -770,7 +706,7 @@ class Trainer:
                             checkpoint_step=batch_step,
                         )
 
-            # Break if we've reached training steps
+            # Break out of the loop if we've reached the maximum training steps.
             if batch_step >= self.configs["training"].max_steps:
                 break
 
