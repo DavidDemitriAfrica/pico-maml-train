@@ -352,8 +352,16 @@ def initialize_dataloader(
         DataLoader: PyTorch DataLoader instance configured for the dataset.
     """
 
+    tokenizer = AutoTokenizer.from_pretrained(data_config.tokenizer.name)
+
     def _collate_fn(batch):
-        return {"input_ids": [entry["input_ids"] for entry in batch]}
+        # Each entry in the batch is assumed to be a dict with "input_ids"
+        input_ids_list = [entry["input_ids"] for entry in batch]
+        # Use the tokenizer's pad method to pad the list of input ids
+        padded = tokenizer.pad(
+            {"input_ids": input_ids_list}, padding=True, return_tensors="pt"
+        )
+        return padded
 
     sub_batch_size = data_config.dataloader.batch_size // (
         fabric.world_size * training_config.optimization.gradient_accumulation_steps
