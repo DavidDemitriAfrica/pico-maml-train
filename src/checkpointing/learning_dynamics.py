@@ -202,17 +202,14 @@ class CheckpointStateExtractor:
 
             # If the configured index is out of bounds, clamp it to the maximum valid index.
             if sequence_idx >= module_out.shape[1]:
-                # Option 1: Use the last token's activations.
                 clamped_idx = module_out.shape[1] - 1
-                self.fabric.log(
-                    f"Warning: configured sequence_idx ({sequence_idx}) is out of bounds for module {module_name} "
-                    f"(max index is {module_out.shape[1]-1}). Using {clamped_idx} instead.",
-                    level=logging.WARNING,
+                logging.warning(
+                    f"configured sequence_idx ({sequence_idx}) is out of bounds for module {module_name} "
+                    f"(max index is {module_out.shape[1]-1}). Using {clamped_idx} instead."
                 )
                 sequence_idx = clamped_idx
 
             local_activations = module_out[:, sequence_idx, :].detach()
-
             # Gather activations from all processes using fabric
             gathered_activations = self.fabric.all_gather(local_activations)
 
