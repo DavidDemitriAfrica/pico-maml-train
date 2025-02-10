@@ -76,6 +76,11 @@ class Trainer:
         # Setup Config
         self.configs = initialize_configuration(config_path)
 
+        # Reset the RoPE frequency tensor cache so it uses the current max_seq_len.
+        from src.model.pico import RoPE
+
+        RoPE._freqs_cis = None
+
         # Setup Run Directory (i.e. where we store checkpoints, logs, etc.)
         initialize_run_dir(checkpointing_config=self.configs["checkpointing"])
 
