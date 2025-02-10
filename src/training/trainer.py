@@ -483,7 +483,7 @@ class Trainer:
             self.train_iterator, start=initial_sub_batch_step
         ):
             # --- 1. Supervised Branch (always computed) ---
-            _input_ids = torch.tensor(sub_batch["input_ids"], device=self.fabric.device)
+            _input_ids = sub_batch["input_ids"].clone().detach().to(self.fabric.device)
             input_ids = _input_ids[:, :-1]
             labels = _input_ids[:, 1:]
 
