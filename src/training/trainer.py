@@ -128,19 +128,10 @@ class Trainer:
                 self.inner_lr_param = torch.nn.Parameter(
                     torch.log(torch.tensor([init_lr_value], dtype=torch.float32))
                 )
+                self.model.register_parameter("inner_lr_param", self.inner_lr_param)
 
-        # ### NEW: Build optimizer param groups
-        # By default, we optimize all model parameters
-        model_params = list(self.model.parameters())
-
-        # If we have an inner_lr_param, add it so it will be updated by the outer optimizer
-        if self.inner_lr_param is not None:
-            model_params += [self.inner_lr_param]
-
-        # Initialize the optimizer with the param group
         self.optimizer = initialize_optimizer(
             training_config=self.configs["training"],
-            model_params=model_params,  # pass in the combined list
         )
         self.lr_scheduler = initialize_lr_scheduler(
             training_config=self.configs["training"], optimizer=self.optimizer
