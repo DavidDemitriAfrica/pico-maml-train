@@ -235,7 +235,7 @@ class Trainer:
                 # For example, sample 100 words from the tokenizer's vocabulary.
                 full_vocab = list(self.tokenizer.get_vocab().keys())
                 self.smlmt_vocabulary = random.sample(
-                    full_vocab, min(100, len(full_vocab))
+                    full_vocab, min(1000, len(full_vocab))
                 )
             else:
                 self.smlmt_vocabulary = self.configs["smlmt"].vocabulary
@@ -586,7 +586,7 @@ class Trainer:
             # Here, we add the losses (if meta_loss is computed) so that gradients flow from both.
             total_loss = supervised_loss
             if meta_loss is not None:
-                total_loss = total_loss + meta_loss * 10
+                total_loss = total_loss + meta_loss
 
             should_accumulate_gradients = (sub_batch_step + 1) % self.configs[
                 "training"
