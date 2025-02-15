@@ -107,13 +107,11 @@ class Trainer:
         # Setup Model, Optimizer, and Dataloaders
         self.model = Pico(model_config=self.configs["model"], fabric=self.fabric)
         self.inner_lr_param = None
-        self.learn_inner_lr = False
-        if self.configs["smlmt"].enabled:
-            self.learn_inner_lr = self.configs["smlmt"].get("learn_inner_lr", False)
 
         # 3. If SMLMT is enabled, instantiate the classifier (so model.state_dict has its keys).
         self.smlmt_enabled = self.configs["smlmt"].enabled
         if self.smlmt_enabled:
+            self.learn_inner_lr = self.configs["smlmt"].learn_inner_lr
             self.smlmt_probability = self.configs["smlmt"].probability
             self.smlmt_num_classes = self.configs["smlmt"].num_classes
             self.smlmt_support = self.configs["smlmt"].support_per_class

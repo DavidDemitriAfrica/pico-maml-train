@@ -48,3 +48,4 @@ smlmt:
   smlmt_weight: 1  # weight to scale the meta–learning loss relative to the supervised loss
   inner_lr: 0.001
   inner_steps: 100
+  learn_inner_lr: True
