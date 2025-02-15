@@ -131,7 +131,7 @@ class Trainer:
                 self.model.register_parameter("inner_lr_param", self.inner_lr_param)
 
         self.optimizer = initialize_optimizer(
-            training_config=self.configs["training"],
+            training_config=self.configs["training"], model=self.model
         )
         self.lr_scheduler = initialize_lr_scheduler(
             training_config=self.configs["training"], optimizer=self.optimizer
