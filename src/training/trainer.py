@@ -106,12 +106,16 @@ class Trainer:
 
         # Setup Model, Optimizer, and Dataloaders
         self.model = Pico(model_config=self.configs["model"], fabric=self.fabric)
-        self.inner_lr_param = None
+        self.optimizer = initialize_optimizer(
+            training_config=self.configs["training"], model=self.model
+        )
+        self.lr_scheduler = initialize_lr_scheduler(
+            training_config=self.configs["training"], optimizer=self.optimizer
+        )
 
         # 3. If SMLMT is enabled, instantiate the classifier (so model.state_dict has its keys).
         self.smlmt_enabled = self.configs["smlmt"].enabled
         if self.smlmt_enabled:
-            self.learn_inner_lr = self.configs["smlmt"].learn_inner_lr
             self.smlmt_probability = self.configs["smlmt"].probability
             self.smlmt_num_classes = self.configs["smlmt"].num_classes
             self.smlmt_support = self.configs["smlmt"].support_per_class
@@ -120,22 +124,6 @@ class Trainer:
                 self.configs["model"].d_model, self.smlmt_num_classes
             )
             print(f"SMLMT enabled with probability {self.smlmt_probability}")
-
-            # ### NEW: If we are learning the inner LR, define a parameter for it
-            if self.learn_inner_lr:
-                # Store log-lr so it can be any positive real value upon exponentiation.
-                init_lr_value = self.configs["smlmt"].inner_lr
-                self.inner_lr_param = torch.nn.Parameter(
-                    torch.log(torch.tensor([init_lr_value], dtype=torch.float32))
-                )
-                self.model.register_parameter("inner_lr_param", self.inner_lr_param)
-
-        self.optimizer = initialize_optimizer(
-            training_config=self.configs["training"], model=self.model
-        )
-        self.lr_scheduler = initialize_lr_scheduler(
-            training_config=self.configs["training"], optimizer=self.optimizer
-        )
 
         # Wrap with Fabric
         self.model, self.optimizer = self.fabric.setup(self.model, self.optimizer)
@@ -483,8 +471,6 @@ class Trainer:
         interval_inf_or_nan_count = torch.tensor(0, device=self.fabric.device)
         interval_smlmt_loss = torch.tensor(0.0, device=self.fabric.device)  # meta loss
         interval_smlmt_steps = torch.tensor(0, device=self.fabric.device)
-        interval_total_loss = torch.tensor(0.0, device=self.fabric.device)
-        interval_total_steps = torch.tensor(0, device=self.fabric.device)
 
         if self.should_compute_learning_dynamics:
             training_batch = {"input_ids": []}
@@ -560,12 +546,8 @@ class Trainer:
                     query_inputs[key] = query_inputs[key].to(self.fabric.device)
 
                 # Set inner loop hyperparameters.
-                if self.inner_lr_param is not None:
-                    inner_lr = self.inner_lr_param.exp().item()
-                else:
-                    inner_lr = self.configs["smlmt"].inner_lr
-
-                inner_steps = self.configs["smlmt"].inner_steps
+                inner_lr = self.configs["smlmt"].inner_lr  # e.g., 1e-3
+                inner_steps = self.configs["smlmt"].inner_steps  # e.g., 1 or 5
 
                 classifier_optimizer = torch.optim.SGD(
                     self.model.classifier.parameters(), lr=inner_lr
@@ -625,8 +607,6 @@ class Trainer:
                         supervised_loss.item()
                     )  # accumulate supervised loss
                     interval_steps += 1
-                    interval_total_loss += total_loss.item()
-                    interval_total_steps += 1
 
             # If we're still accumulating gradients, skip the optimizer step.
             if should_accumulate_gradients:
@@ -640,8 +620,6 @@ class Trainer:
                     interval_inf_or_nan_count=interval_inf_or_nan_count,
                     interval_smlmt_loss=interval_smlmt_loss,
                     interval_smlmt_steps=interval_smlmt_steps,
-                    interval_total_loss=interval_total_loss,
-                    interval_total_steps=interval_total_steps,
                     batch_step=batch_step,
                 )
                 # Reset interval accumulators.
@@ -650,8 +628,6 @@ class Trainer:
                 interval_loss = torch.tensor(0.0, device=self.fabric.device)
                 interval_steps = torch.tensor(0, device=self.fabric.device)
                 interval_inf_or_nan_count = torch.tensor(0, device=self.fabric.device)
-                interval_total_loss = torch.tensor(0.0, device=self.fabric.device)
-                interval_total_steps = torch.tensor(0, device=self.fabric.device)
 
             # --- 5. Learning Dynamics Checkpointing ---
             if batch_step % self.configs["checkpointing"].save_every_n_steps == 0:
@@ -747,8 +723,6 @@ class Trainer:
         interval_inf_or_nan_count: torch.Tensor,
         interval_smlmt_loss: torch.Tensor,  # NEW: accumulated SMLMT loss over the interval
         interval_smlmt_steps: torch.Tensor,  # NEW: number of SMLMT updates in the interval
-        interval_total_loss: torch.Tensor,
-        interval_total_steps: torch.Tensor,
         batch_step: int,
     ):
         """
@@ -784,20 +758,6 @@ class Trainer:
             else float("inf")
         )
 
-        # ### NEW: Total loss
-
-        gathered_interval_total_loss = self.fabric.all_reduce(
-            interval_total_loss, reduce_op="sum"
-        ).item()
-        gathered_interval_total_steps = self.fabric.all_reduce(
-            interval_total_steps, reduce_op="sum"
-        ).item()
-        avg_total_loss = (
-            gathered_interval_total_loss / gathered_interval_total_steps
-            if gathered_interval_total_steps > 0
-            else float("inf")
-        )
-
         self.fabric.log("train/supervised_loss", avg_supervised_loss, step=batch_step)
         self.fabric.log("train/smlmt_loss", avg_smlmt_loss, step=batch_step)
         self.fabric.log(
@@ -810,19 +770,12 @@ class Trainer:
             self.lr_scheduler.get_last_lr()[0],
             step=batch_step,
         )
-        self.fabric.log("train/total_loss", avg_total_loss, step=batch_step)
-        # ### NEW: If inner_lr is being learned, log it as well
-        if self.inner_lr_param is not None:
-            current_inner_lr = self.inner_lr_param.exp().item()
-            self.fabric.log("train/inner_lr", current_inner_lr, step=batch_step)
+
         # Log to console in tree format.
-        self.log(f"Step {batch_step} -- Training Metrics")
+        self.log(f"Step {batch_step} -- 🔄 Training Metrics")
         self.log(f"├── Supervised Loss: {avg_supervised_loss:.4f}")
         self.log(f"├── SMLMT Loss: {avg_smlmt_loss:.4f}")
-        self.log(f"├── Total Loss: {avg_total_loss:.4f}")
         self.log(f"├── Learning Rate: {self.lr_scheduler.get_last_lr()[0]:.2e}")
-        if self.inner_lr_param is not None:
-            self.log(f"├── Inner LR (learned): {current_inner_lr:.2e}")
         self.log(f"└── Inf/NaN count: {gathered_interval_inf_or_nan_count}")
 
     def _log_evaluation_results(
