@@ -26,7 +26,7 @@ def run_universal_ner_evaluation(
     # Instantiate your custom token classification model.
     # Decide on the number of labels (e.g., the number of entity types + 1 for 'O')
     num_labels = 6  # <-- update this as appropriate for your task
-    model = PicoForTokenClassification(model_path, num_labels)
+    model = PicoForTokenClassification.from_pretrained(model_path, num_labels)
 
     # Create a token classification pipeline with an aggregation strategy
     ner_pipe = pipeline(
