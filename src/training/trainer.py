@@ -786,8 +786,17 @@ class Trainer:
             self.log(f"Step {batch_step} -- 📊 Evaluation Results")
             for i, (metric, result) in enumerate(evaluation_results.items()):
                 prefix = "└──" if i == len(evaluation_results) - 1 else "├──"
-                self.log(f"{prefix} {metric}: {result}")
-                self.fabric.log(f"eval/{metric}", result, step=batch_step)
+                if metric == "universal_ner":
+                    overall_f1 = result.get("detailed", {}).get("overall_f1", None)
+                    overall_acc = result.get("detailed", {}).get(
+                        "overall_accuracy", None
+                    )
+                    simple_report = {"f1": overall_f1, "overall_accuracy": overall_acc}
+                    self.log(f"{prefix} {metric}: {simple_report}")
+                    self.fabric.log(f"eval/{metric}", simple_report, step=batch_step)
+                else:
+                    self.log(f"{prefix} {metric}: {result}")
+                    self.fabric.log(f"eval/{metric}", result, step=batch_step)
 
     def _log_training_configuration(self):
         """Log training configuration details including model, hardware, and batch settings."""
