@@ -11,16 +11,14 @@ def run_universal_ner_evaluation(
     # Load the Universal NER dataset using the provided config
     dataset = load_dataset(
         ner_config.dataset_name,
-        ner_config.dataset_config,  # pass the dataset config, e.g. "en_pud"
+        ner_config.dataset_config,  # e.g. "en_pud"
         split=ner_config.dataset_split,
     )
-    # Load the tokenizer using the checkpoint path
+    # Load the tokenizer from the checkpoint/model_path
     tokenizer = AutoTokenizer.from_pretrained(model_path, trust_remote_code=True)
 
-    # Decide on the number of labels (e.g., the number of entity types + 1 for 'O')
     num_labels = 6  # Update as appropriate for your task
-
-    # Use from_pretrained to load your custom token classification model.
+    # Load your custom token classification model from checkpoint
     model = PicoForTokenClassification.from_pretrained(
         model_path, num_labels=num_labels
     )
@@ -36,23 +34,22 @@ def run_universal_ner_evaluation(
     predictions = []
     references = []
 
+    # Get the mapping from label IDs to label strings from the dataset features.
+    label_list = dataset.features["ner_tags"].feature.names
+
     for example in dataset:
-        # The dataset provides pre-tokenized data.
         tokens = example["tokens"]
-        gold_tags = example["ner_tags"]
+        gold_tags = example["ner_tags"]  # these are integers
 
-        # Reconstruct the sentence (assuming whitespace separation matches the tokenization)
+        # Reconstruct the sentence from tokens
         sentence = " ".join(tokens)
-
-        # Run the NER pipeline on the sentence
         ner_results = ner_pipe(sentence)
 
         # Initialize prediction tags with "O"
         pred_tags = ["O"] * len(tokens)
-
-        # For each predicted entity, align it with the tokens.
         for entity in ner_results:
             entity_label = entity["entity_group"]
+            # Split the predicted entity text into tokens
             entity_tokens = entity["word"].split()
             for i in range(len(tokens) - len(entity_tokens) + 1):
                 if tokens[i : i + len(entity_tokens)] == entity_tokens:
@@ -62,10 +59,13 @@ def run_universal_ner_evaluation(
                     break
 
         predictions.append(pred_tags)
-        references.append(gold_tags)
+        references.append(gold_tags)  # still integers
+
+    # Convert integer references to their string labels using the mapping.
+    converted_references = [[label_list[tag] for tag in ref] for ref in references]
 
     # Compute NER metrics using the seqeval metric
     metric = evaluate.load("seqeval")
-    results = metric.compute(predictions=predictions, references=references)
+    results = metric.compute(predictions=predictions, references=converted_references)
     f1 = results.get("overall_f1", 0.0)
     return {"f1": f1, "detailed": results}
