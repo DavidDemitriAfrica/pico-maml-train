@@ -659,21 +659,20 @@ class PicoForTokenClassification(PreTrainedModel):
     _no_split_modules = ["PicoBlock", "Attention", "SwiGLU", "RMSNorm"]
 
     def __init__(self, config: PicoHFConfig, num_labels: int = None):
-        # If a num_labels argument is provided, attach it to the config.
+        # If a num_labels argument is provided, store it in the config.
         if num_labels is not None:
             setattr(config, "num_labels", num_labels)
         super().__init__(config)
         # Initialize the base Pico model using the provided config.
         self.pico = Pico(config)
         # Create a token classification head.
-        # The number of labels is now read from the config (or defaults to 2 if not provided).
         effective_num_labels = getattr(config, "num_labels", 2)
         self.classifier = nn.Linear(config.d_model, effective_num_labels)
+        # <---- IMPORTANT: Override model_type to trick the HF pipeline
+        self.config.model_type = "bert"  # (or any supported type)
 
     def forward(self, input_ids: torch.Tensor, **kwargs) -> TokenClassifierOutput:
-        # Run the Pico model and get the hidden representations.
-        # (We use return_hidden=True so that the hidden states are returned.)
+        # Run the Pico model and get hidden states (by setting return_hidden=True)
         _, hidden_states, _ = self.pico(input_ids, return_hidden=True, **kwargs)
-        # Run the hidden states through the classifier head for token-level predictions.
         token_logits = self.classifier(hidden_states)
         return TokenClassifierOutput(logits=token_logits)
