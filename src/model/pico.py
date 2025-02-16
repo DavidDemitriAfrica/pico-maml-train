@@ -32,7 +32,11 @@ from torch.nn.attention import sdpa_kernel, SDPBackend
 from dataclasses import asdict
 
 from transformers import PretrainedConfig, PreTrainedModel
-from transformers.modeling_outputs import CausalLMOutputWithPast, CausalLMOutput
+from transformers.modeling_outputs import (
+    CausalLMOutputWithPast,
+    CausalLMOutput,
+    TokenClassifierOutput,
+)
 
 # typing imports
 from typing import Union, Tuple, Optional, TYPE_CHECKING, Dict, Any
@@ -642,3 +646,31 @@ class PicoHF(PreTrainedModel):
 PicoHFConfig.register_for_auto_class()
 PicoHF.register_for_auto_class("AutoModel")
 PicoHF.register_for_auto_class("AutoModelForCausalLM")
+
+########################################################
+#
+# PicoForTokenClassification
+#
+########################################################
+
+
+class PicoForTokenClassification(PreTrainedModel):
+    config_class = PicoHFConfig
+    _no_split_modules = ["PicoBlock", "Attention", "SwiGLU", "RMSNorm"]
+
+    def __init__(self, config: PicoHFConfig):
+        super().__init__(config)
+        # Initialize the base Pico model.
+        self.pico = Pico(config)
+        # Create a token classification head.
+        # It is assumed that the config contains an attribute `num_labels`.
+        num_labels = getattr(config, "num_labels", 2)  # default to 2 if not provided
+        self.classifier = nn.Linear(config.d_model, num_labels)
+
+    def forward(self, input_ids: torch.Tensor, **kwargs) -> TokenClassifierOutput:
+        # Forward pass through Pico with return_hidden=True so that we get hidden representations.
+        # The Pico.forward method will then return (logits, hidden_states, past_key_values)
+        _, hidden_states, _ = self.pico(input_ids, return_hidden=True, **kwargs)
+        # Pass the hidden states through the classification head for token-level predictions.
+        token_logits = self.classifier(hidden_states)
+        return TokenClassifierOutput(logits=token_logits)
