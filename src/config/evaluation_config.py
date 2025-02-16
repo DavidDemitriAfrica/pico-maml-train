@@ -21,7 +21,8 @@ class PalomaEvaluationConfig:
 @dataclass
 class UniversalNEREvaluationConfig:
     dataset_name: str = "universalner/universal_ner"
-    dataset_split: str = "test"  # or "val", depending on your use case
+    dataset_config: str = "en_pud"  # specifying the dataset config.
+    dataset_split: str = "test"  # or "val", as needed
     batch_size: int = 16
 
 

@@ -15,9 +15,12 @@ from transformers import AutoTokenizer, AutoModelForTokenClassification, pipelin
 def run_universal_ner_evaluation(
     model_path: str, ner_config: UniversalNEREvaluationConfig
 ) -> dict:
-    # Load the Universal NER dataset
-    dataset = load_dataset(ner_config.dataset_name, split=ner_config.dataset_split)
-
+    # Load the Universal NER dataset using the provided config
+    dataset = load_dataset(
+        ner_config.dataset_name,
+        ner_config.dataset_config,  # <-- pass the dataset config
+        split=ner_config.dataset_split,
+    )
     # Load the model and tokenizer for token classification
     tokenizer = AutoTokenizer.from_pretrained(model_path, trust_remote_code=True)
     model = AutoModelForTokenClassification.from_pretrained(

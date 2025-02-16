@@ -23,6 +23,9 @@ evaluation:
   metrics:
     - universal_ner
   universal_ner:
+    dataset_name: "universalner/universal_ner"
+    dataset_config: "en_pud"  # Choose one from: ['ceb_gja', 'zh_gsd', 'zh_gsdsimp', 'zh_pud', ...]
+    dataset_split: "test"
     batch_size: 32
 
 monitoring:
