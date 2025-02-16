@@ -6,7 +6,7 @@ from typing import List
 @dataclass
 class SMLMTConfig:
     enabled: bool = False
-    probability: float = 0.3
+    probability: float = 0.2
     num_classes: int = 3
     support_per_class: int = 2
     query_per_class: int = 2

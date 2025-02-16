@@ -470,14 +470,8 @@ class Pico(nn.Module):
 
         # Get the state dict with the "pico." prefix
         state_dict = self.state_dict(prefix="pico.")
-        # Filter out keys related to the classifier head.
-        filtered_state_dict = {
-            k: v for k, v in state_dict.items() if not k.startswith("classifier")
-        }
-
-        # Load the filtered state dict into the hf_model.
-        # Use strict=False so that missing keys (the classifier) are ignored.
-        hf_model.load_state_dict(filtered_state_dict, strict=False)
+        # Do not filter out the classifier head; include it in the state dict.
+        hf_model.load_state_dict(state_dict, strict=False)
 
         return hf_model
 
@@ -659,15 +653,18 @@ class PicoForTokenClassification(PreTrainedModel):
     _no_split_modules = ["PicoBlock", "Attention", "SwiGLU", "RMSNorm"]
 
     def __init__(self, config: PicoHFConfig, num_labels: int = None):
-        # If a num_labels argument is provided, store it in the config.
         if num_labels is not None:
             setattr(config, "num_labels", num_labels)
         super().__init__(config)
         # Initialize the base Pico model using the provided config.
         self.pico = Pico(config)
-        # Create a token classification head.
         effective_num_labels = getattr(config, "num_labels", 2)
-        self.classifier = nn.Linear(config.d_model, effective_num_labels)
+        # If the Pico model already has a classifier (from training), use it.
+        if hasattr(self.pico, "classifier") and self.pico.classifier is not None:
+            self.classifier = self.pico.classifier
+        else:
+            # Otherwise, create a new one.
+            self.classifier = nn.Linear(config.d_model, effective_num_labels)
         # <---- IMPORTANT: Override model_type to trick the HF pipeline
         self.config.model_type = "bert"  # (or any supported type)
 
