@@ -13,11 +13,11 @@ checkpointing:
   save_checkpoint_repo_id: null
 
   learning_dynamics:
-    batch_size: 256
+    batch_size: 16
 
 model:
-    d_model: 384
-    activation_hidden_dim: 1536
+    d_model: 192
+    activation_hidden_dim: 768
 
 evaluation: 
   paloma:
@@ -28,7 +28,7 @@ monitoring:
     log_every_n_steps: 10
 
 training:
-  max_steps: 100000
+  max_steps: 10000
 
   optimization:
     lr: 0.001
