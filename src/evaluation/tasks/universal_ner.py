@@ -46,11 +46,8 @@ def run_universal_ner_evaluation(
         tokens = example["tokens"]
         gold_tags = example["ner_tags"]
 
-        # Reconstruct the sentence from tokens and ensure truncation.
         sentence = " ".join(tokens)
-        ner_results = ner_pipe(
-            sentence, truncation=True, max_length=ner_config.max_length
-        )
+        ner_results = ner_pipe(sentence, max_length=ner_config.max_length)
 
         # Build predictions.
         pred_tags = ["O"] * len(tokens)
