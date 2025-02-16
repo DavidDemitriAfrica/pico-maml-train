@@ -29,6 +29,7 @@ def run_universal_ner_evaluation(
         model=model,
         tokenizer=tokenizer,
         aggregation_strategy="simple",
+        batch_size=ner_config.batch_size,  # ensure your config includes a reasonable batch_size
     )
 
     predictions = []
