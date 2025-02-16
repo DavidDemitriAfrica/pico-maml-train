@@ -17,6 +17,7 @@ libraries/frameworks.
 import os
 import torch
 from .tasks.paloma import run_paloma_evaluation
+from .tasks.universal_ner import run_universal_ner_evaluation
 
 # typing imports
 from src.config import EvaluationConfig, CheckpointingConfig
@@ -91,6 +92,12 @@ def run_evaluation(
                 paloma_result = run_paloma_evaluation(
                     model_path, evaluation_config.paloma
                 )
+            # --- New: Universal NER evaluation ---
+            elif metric == "universal_ner":
+                ner_result = run_universal_ner_evaluation(
+                    model_path, evaluation_config.universal_ner
+                )
+                evaluation_results[metric] = ner_result
             else:
                 raise ValueError(f"Metric {metric} not supported")
 
