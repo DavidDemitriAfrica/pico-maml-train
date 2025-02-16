@@ -458,8 +458,14 @@ class Pico(nn.Module):
         self.de_embedding_proj = nn.Linear(
             self.config.d_model, self.config.vocab_size, bias=False
         )
-        # NEW: initialize an (optional) classifier head (for SMLMT/MAML)
-        self.classifier = None
+        # NEW: dedicated token classification head (for evaluation)
+        # Expect a config attribute `token_classification_num_labels` (e.g., 6 for NER).
+        self.token_classifier = nn.Linear(
+            self.config.d_model,
+            getattr(self.config, "token_classification_num_labels", 2),
+        )
+        # The SMLMT classifier (if enabled) is stored separately.
+        self.classifier_smlmt = None
 
     def convert_to_hf_model(self) -> "PicoHF":
         """Convert the Lightning model to a HuggingFace model."""
@@ -660,10 +666,12 @@ class PicoForTokenClassification(PreTrainedModel):
         self.pico = Pico(config)
         effective_num_labels = getattr(config, "num_labels", 2)
         # If the Pico model already has a classifier (from training), use it.
-        if hasattr(self.pico, "classifier") and self.pico.classifier is not None:
-            self.classifier = self.pico.classifier
+        if (
+            hasattr(self.pico, "token_classifier")
+            and self.pico.token_classifier is not None
+        ):
+            self.classifier = self.pico.token_classifier
         else:
-            # Otherwise, create a new one.
             self.classifier = nn.Linear(config.d_model, effective_num_labels)
         # <---- IMPORTANT: Override model_type to trick the HF pipeline
         self.config.model_type = "bert"  # (or any supported type)

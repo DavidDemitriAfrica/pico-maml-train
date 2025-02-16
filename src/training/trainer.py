@@ -120,7 +120,7 @@ class Trainer:
             self.smlmt_num_classes = self.configs["smlmt"].num_classes
             self.smlmt_support = self.configs["smlmt"].support_per_class
             self.smlmt_query = self.configs["smlmt"].query_per_class
-            self.model.classifier = torch.nn.Linear(
+            self.model.classifier_smlmt = torch.nn.Linear(
                 self.configs["model"].d_model, self.smlmt_num_classes
             )
             print(f"SMLMT enabled with probability {self.smlmt_probability}")
@@ -550,10 +550,10 @@ class Trainer:
                 inner_steps = self.configs["smlmt"].inner_steps  # e.g., 1 or 5
 
                 classifier_optimizer = torch.optim.SGD(
-                    self.model.classifier.parameters(), lr=inner_lr
+                    self.model.classifier_smlmt.parameters(), lr=inner_lr
                 )
                 with higher.innerloop_ctx(
-                    self.model.classifier,
+                    self.model.classifier_smlmt,
                     classifier_optimizer,
                     copy_initial_weights=True,
                 ) as (fclassifier, diffopt):
