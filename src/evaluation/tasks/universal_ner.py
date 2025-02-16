@@ -8,49 +8,55 @@ from transformers import AutoTokenizer, pipeline
 def run_universal_ner_evaluation(
     model_path: str, ner_config: UniversalNEREvaluationConfig
 ) -> dict:
-    # Load the Universal NER dataset using the provided config
+    # Load the dataset and optionally limit its size.
     dataset = load_dataset(
         ner_config.dataset_name,
-        ner_config.dataset_config,  # e.g. "en_pud"
+        ner_config.dataset_config,
         split=ner_config.dataset_split,
     )
-    # Load the tokenizer from the checkpoint/model_path
+    if ner_config.limit_eval_examples is not None:
+        dataset = dataset.select(
+            range(min(len(dataset), ner_config.limit_eval_examples))
+        )
+
+    # Load the tokenizer.
     tokenizer = AutoTokenizer.from_pretrained(model_path, trust_remote_code=True)
 
-    num_labels = 6  # Update as appropriate for your task
-    # Load your custom token classification model from checkpoint
+    num_labels = 6  # Update as needed for your task.
     model = PicoForTokenClassification.from_pretrained(
         model_path, num_labels=num_labels
     )
 
-    # Create a token classification pipeline with an aggregation strategy
+    # Create the NER pipeline. We pass the desired batch_size.
     ner_pipe = pipeline(
         "ner",
         model=model,
         tokenizer=tokenizer,
         aggregation_strategy="simple",
-        batch_size=ner_config.batch_size,  # ensure your config includes a reasonable batch_size
+        batch_size=ner_config.batch_size,
     )
 
     predictions = []
     references = []
 
-    # Get the mapping from label IDs to label strings from the dataset features.
+    # Get label mapping.
     label_list = dataset.features["ner_tags"].feature.names
 
     for example in dataset:
         tokens = example["tokens"]
-        gold_tags = example["ner_tags"]  # these are integers
+        gold_tags = example["ner_tags"]
 
-        # Reconstruct the sentence from tokens
+        # Reconstruct the sentence from tokens and ensure truncation.
         sentence = " ".join(tokens)
-        ner_results = ner_pipe(sentence)
+        # You can force truncation by tokenizing separately:
+        encoded = tokenizer(sentence, truncation=True, max_length=ner_config.max_length)
+        # Then pass the sentence (or encoded input) to the pipeline.
+        ner_results = ner_pipe(encoded)  # The pipeline will use the tokenizer settings.
 
-        # Initialize prediction tags with "O"
+        # Build predictions.
         pred_tags = ["O"] * len(tokens)
         for entity in ner_results:
             entity_label = entity["entity_group"]
-            # Split the predicted entity text into tokens
             entity_tokens = entity["word"].split()
             for i in range(len(tokens) - len(entity_tokens) + 1):
                 if tokens[i : i + len(entity_tokens)] == entity_tokens:
@@ -60,12 +66,11 @@ def run_universal_ner_evaluation(
                     break
 
         predictions.append(pred_tags)
-        references.append(gold_tags)  # still integers
+        references.append(gold_tags)
 
-    # Convert integer references to their string labels using the mapping.
+    # Convert integer references to string labels.
     converted_references = [[label_list[tag] for tag in ref] for ref in references]
 
-    # Compute NER metrics using the seqeval metric
     metric = evaluate.load("seqeval")
     results = metric.compute(predictions=predictions, references=converted_references)
     f1 = results.get("overall_f1", 0.0)

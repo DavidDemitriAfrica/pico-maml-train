@@ -21,9 +21,11 @@ class PalomaEvaluationConfig:
 @dataclass
 class UniversalNEREvaluationConfig:
     dataset_name: str = "universalner/universal_ner"
-    dataset_config: str = "en_pud"  # specifying the dataset config.
-    dataset_split: str = "test"  # or "val", as needed
+    dataset_config: str = "en_pud"  # e.g., choose one from available configs
+    dataset_split: str = "test"
     batch_size: int = 16
+    max_length: int = 512  # force sequences to be no longer than 512 tokens
+    limit_eval_examples: int = 1000  # only evaluate on a subset (if desired)
 
 
 @dataclass
