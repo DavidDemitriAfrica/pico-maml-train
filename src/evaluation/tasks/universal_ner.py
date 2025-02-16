@@ -21,8 +21,9 @@ def run_universal_ner_evaluation(
 
     # Load the tokenizer.
     tokenizer = AutoTokenizer.from_pretrained(model_path, trust_remote_code=True)
+    tokenizer.model_max_length = ner_config.max_length  # to your desired length
 
-    num_labels = 6  # Update as needed for your task.
+    num_labels = 6
     model = PicoForTokenClassification.from_pretrained(
         model_path, num_labels=num_labels
     )
@@ -47,7 +48,7 @@ def run_universal_ner_evaluation(
         gold_tags = example["ner_tags"]
 
         sentence = " ".join(tokens)
-        ner_results = ner_pipe(sentence, max_length=ner_config.max_length)
+        ner_results = ner_pipe(sentence)
 
         # Build predictions.
         pred_tags = ["O"] * len(tokens)
