@@ -59,14 +59,6 @@ def save_evaluation_results(
     # Convert evaluation_results to native Python types (e.g. int instead of np.int64)
     evaluation_results_native = convert_to_native(evaluation_results)
 
-    # Optionally extract and report the overall F1 score for Universal NER
-    overall_f1 = None
-    if "universal_ner" in evaluation_results_native:
-        ner_result = evaluation_results_native["universal_ner"]
-        if "detailed" in ner_result and "overall_f1" in ner_result["detailed"]:
-            overall_f1 = ner_result["detailed"]["overall_f1"]
-            print(f"Overall F1 for Universal NER: {overall_f1:.4f}")
-
     run_dir = os.path.join(checkpointing_config.runs_dir, checkpointing_config.run_name)
     eval_results_dir = os.path.join(
         run_dir, checkpointing_config.evaluation.eval_results_dir
