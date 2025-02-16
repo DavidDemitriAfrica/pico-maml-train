@@ -15,7 +15,6 @@ from ._constants import (
     FABRIC_CHECKPOINT_DIR,
     FABRIC_CHECKPOINT_FILENAME,
     EVAL_RESULTS_DIR,
-    MAX_SEQ_LEN,
     LEARNING_DYNAMICS_DIR,
 )
 
@@ -44,7 +43,7 @@ class LearningDynamicsCheckpointingConfig:
 
     # Sequence index at which to extract hidden states; by default, we extract the hidden states
     # at the last token of the sequence
-    sequence_idx: int = MAX_SEQ_LEN - 1
+    sequence_idx: int = -1
 
     # size of the sub-batch used for extracting learning dynamics states
     batch_size: int = 8
