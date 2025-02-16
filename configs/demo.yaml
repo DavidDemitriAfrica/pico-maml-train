@@ -19,8 +19,10 @@ model:
     d_model: 96
     activation_hidden_dim: 384
 
-evaluation: 
-  paloma:
+evaluation:
+  metrics:
+    - universal_ner
+  universal_ner:
     batch_size: 32
 
 monitoring:
