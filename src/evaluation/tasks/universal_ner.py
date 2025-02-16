@@ -8,8 +8,8 @@ a Hugging Face model loaded from the provided checkpoint, and computes NER metri
 import evaluate
 from datasets import load_dataset
 from src.config.evaluation_config import UniversalNEREvaluationConfig
-
-from transformers import AutoTokenizer, AutoModelForTokenClassification, pipeline
+from src.model.pico import PicoForTokenClassification
+from transformers import AutoTokenizer, pipeline
 
 
 def run_universal_ner_evaluation(
@@ -23,9 +23,10 @@ def run_universal_ner_evaluation(
     )
     # Load the model and tokenizer for token classification
     tokenizer = AutoTokenizer.from_pretrained(model_path, trust_remote_code=True)
-    model = AutoModelForTokenClassification.from_pretrained(
-        model_path, trust_remote_code=True
-    )
+    # Instantiate your custom token classification model.
+    # Decide on the number of labels (e.g., the number of entity types + 1 for 'O')
+    num_labels = 6  # <-- update this as appropriate for your task
+    model = PicoForTokenClassification(model_path, num_labels)
 
     # Create a token classification pipeline with an aggregation strategy
     ner_pipe = pipeline(
