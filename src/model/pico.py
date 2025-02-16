@@ -24,6 +24,8 @@ Adapted from:
     - LLAMA: https://github.com/meta/llama
 """
 
+import os
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -671,21 +673,34 @@ class PicoForTokenClassification(PreTrainedModel):
     def from_pretrained(cls, model_path: str, num_labels: int, **kwargs):
         """
         Loads the config from the model_path and then instantiates the model.
+        This method checks if the given model_path is a directory and tries to load a valid checkpoint file.
         """
         # Load configuration from the checkpoint directory
         config = PicoHFConfig.from_pretrained(model_path, **kwargs)
         config.num_labels = num_labels
         # Instantiate the model using the updated __init__
         model = cls(config, num_labels)
-        # Load the state_dict. You might need to adjust this if your checkpoint
-        # structure differs from what HF expects.
-        state_dict = torch.load(model_path, map_location="cpu")
+
+        # Determine the actual checkpoint file to load.
+        if os.path.isdir(model_path):
+            candidate1 = os.path.join(model_path, "pytorch_model.bin")
+            candidate2 = os.path.join(model_path, "checkpoint.pt")
+            if os.path.isfile(candidate1):
+                model_file = candidate1
+            elif os.path.isfile(candidate2):
+                model_file = candidate2
+            else:
+                raise ValueError(f"No valid model file found in directory {model_path}")
+        else:
+            model_file = model_path
+
+        state_dict = torch.load(model_file, map_location="cpu")
         model.load_state_dict(state_dict, strict=False)
         return model
 
     def forward(self, input_ids: torch.Tensor, **kwargs) -> TokenClassifierOutput:
-        # Use Pico to obtain hidden states (make sure return_hidden=True is supported)
+        # Forward pass through Pico with return_hidden=True so that we get hidden representations.
         _, hidden_states, _ = self.pico(input_ids, return_hidden=True, **kwargs)
-        # Pass hidden states through the token classification head.
+        # Pass hidden states through the token classification head for token-level predictions.
         token_logits = self.classifier(hidden_states)
         return TokenClassifierOutput(logits=token_logits)
