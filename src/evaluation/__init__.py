@@ -92,6 +92,7 @@ def run_evaluation(
                 paloma_result = run_paloma_evaluation(
                     model_path, evaluation_config.paloma
                 )
+                evaluation_results[metric] = paloma_result
             # --- New: Universal NER evaluation ---
             elif metric == "universal_ner":
                 ner_result = run_universal_ner_evaluation(
@@ -100,8 +101,6 @@ def run_evaluation(
                 evaluation_results[metric] = ner_result
             else:
                 raise ValueError(f"Metric {metric} not supported")
-
-            evaluation_results[metric] = paloma_result
 
     torch.cuda.empty_cache()
 
