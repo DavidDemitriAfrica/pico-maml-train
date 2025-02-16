@@ -24,8 +24,6 @@ Adapted from:
     - LLAMA: https://github.com/meta/llama
 """
 
-import os
-
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -660,47 +658,22 @@ class PicoForTokenClassification(PreTrainedModel):
     config_class = PicoHFConfig
     _no_split_modules = ["PicoBlock", "Attention", "SwiGLU", "RMSNorm"]
 
-    def __init__(self, config: PicoHFConfig, num_labels: int):
-        # Set the number of labels in the config
-        config.num_labels = num_labels
+    def __init__(self, config: PicoHFConfig, num_labels: int = None):
+        # If a num_labels argument is provided, attach it to the config.
+        if num_labels is not None:
+            setattr(config, "num_labels", num_labels)
         super().__init__(config)
-        # Initialize the base Pico model.
+        # Initialize the base Pico model using the provided config.
         self.pico = Pico(config)
         # Create a token classification head.
-        self.classifier = nn.Linear(config.d_model, num_labels)
-
-    @classmethod
-    def from_pretrained(cls, model_path: str, num_labels: int, **kwargs):
-        """
-        Loads the config from the model_path and then instantiates the model.
-        This method checks if the given model_path is a directory and tries to load a valid checkpoint file.
-        """
-        # Load configuration from the checkpoint directory
-        config = PicoHFConfig.from_pretrained(model_path, **kwargs)
-        config.num_labels = num_labels
-        # Instantiate the model using the updated __init__
-        model = cls(config, num_labels)
-
-        # Determine the actual checkpoint file to load.
-        if os.path.isdir(model_path):
-            candidate1 = os.path.join(model_path, "pytorch_model.bin")
-            candidate2 = os.path.join(model_path, "checkpoint.pt")
-            if os.path.isfile(candidate1):
-                model_file = candidate1
-            elif os.path.isfile(candidate2):
-                model_file = candidate2
-            else:
-                raise ValueError(f"No valid model file found in directory {model_path}")
-        else:
-            model_file = model_path
-
-        state_dict = torch.load(model_file, map_location="cpu")
-        model.load_state_dict(state_dict, strict=False)
-        return model
+        # The number of labels is now read from the config (or defaults to 2 if not provided).
+        effective_num_labels = getattr(config, "num_labels", 2)
+        self.classifier = nn.Linear(config.d_model, effective_num_labels)
 
     def forward(self, input_ids: torch.Tensor, **kwargs) -> TokenClassifierOutput:
-        # Forward pass through Pico with return_hidden=True so that we get hidden representations.
+        # Run the Pico model and get the hidden representations.
+        # (We use return_hidden=True so that the hidden states are returned.)
         _, hidden_states, _ = self.pico(input_ids, return_hidden=True, **kwargs)
-        # Pass hidden states through the token classification head for token-level predictions.
+        # Run the hidden states through the classifier head for token-level predictions.
         token_logits = self.classifier(hidden_states)
         return TokenClassifierOutput(logits=token_logits)

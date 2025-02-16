@@ -1,10 +1,3 @@
-"""
-Universal NER Evaluation
-
-This evaluation script loads the Universal NER dataset, runs token classification using
-a Hugging Face model loaded from the provided checkpoint, and computes NER metrics.
-"""
-
 import evaluate
 from datasets import load_dataset
 from src.config.evaluation_config import UniversalNEREvaluationConfig
@@ -18,15 +11,19 @@ def run_universal_ner_evaluation(
     # Load the Universal NER dataset using the provided config
     dataset = load_dataset(
         ner_config.dataset_name,
-        ner_config.dataset_config,  # <-- pass the dataset config
+        ner_config.dataset_config,  # pass the dataset config, e.g. "en_pud"
         split=ner_config.dataset_split,
     )
-    # Load the model and tokenizer for token classification
+    # Load the tokenizer using the checkpoint path
     tokenizer = AutoTokenizer.from_pretrained(model_path, trust_remote_code=True)
-    # Instantiate your custom token classification model.
+
     # Decide on the number of labels (e.g., the number of entity types + 1 for 'O')
-    num_labels = 6  # <-- update this as appropriate for your task
-    model = PicoForTokenClassification.from_pretrained(model_path, num_labels)
+    num_labels = 6  # Update as appropriate for your task
+
+    # Use from_pretrained to load your custom token classification model.
+    model = PicoForTokenClassification.from_pretrained(
+        model_path, num_labels=num_labels
+    )
 
     # Create a token classification pipeline with an aggregation strategy
     ner_pipe = pipeline(
@@ -56,9 +53,7 @@ def run_universal_ner_evaluation(
         # For each predicted entity, align it with the tokens.
         for entity in ner_results:
             entity_label = entity["entity_group"]
-            # Split the predicted entity text into tokens
             entity_tokens = entity["word"].split()
-            # Try to find the entity_tokens in the original tokens list
             for i in range(len(tokens) - len(entity_tokens) + 1):
                 if tokens[i : i + len(entity_tokens)] == entity_tokens:
                     pred_tags[i] = f"B-{entity_label}"
