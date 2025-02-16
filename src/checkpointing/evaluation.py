@@ -6,12 +6,29 @@ We save the evaluation results in a JSON file at the step-specific evaluation re
 
 import os
 import json
+import numpy as np
 from huggingface_hub import upload_folder
 
 # typing imports
 from typing import Dict, Any
 from src.config import CheckpointingConfig
 from lightning.fabric import Fabric
+
+
+def convert_to_native(obj):
+    """
+    Recursively convert numpy types to native Python types.
+    """
+    if isinstance(obj, (np.int64, np.int32)):
+        return int(obj)
+    elif isinstance(obj, (np.float64, np.float32)):
+        return float(obj)
+    elif isinstance(obj, dict):
+        return {k: convert_to_native(v) for k, v in obj.items()}
+    elif isinstance(obj, list):
+        return [convert_to_native(x) for x in obj]
+    else:
+        return obj
 
 
 def save_evaluation_results(
@@ -39,20 +56,30 @@ def save_evaluation_results(
     if fabric.global_rank != 0:
         return
 
+    # Convert evaluation_results to native Python types (e.g. int instead of np.int64)
+    evaluation_results_native = convert_to_native(evaluation_results)
+
+    # Optionally extract and report the overall F1 score for Universal NER
+    overall_f1 = None
+    if "universal_ner" in evaluation_results_native:
+        ner_result = evaluation_results_native["universal_ner"]
+        if "detailed" in ner_result and "overall_f1" in ner_result["detailed"]:
+            overall_f1 = ner_result["detailed"]["overall_f1"]
+            print(f"Overall F1 for Universal NER: {overall_f1:.4f}")
+
     run_dir = os.path.join(checkpointing_config.runs_dir, checkpointing_config.run_name)
     eval_results_dir = os.path.join(
         run_dir, checkpointing_config.evaluation.eval_results_dir
     )
-
     os.makedirs(eval_results_dir, exist_ok=True)
 
     curr_eval_results_path = os.path.join(
         eval_results_dir, f"step_{checkpoint_step}.json"
     )
 
-    # save out as json
+    # Save out as JSON
     with open(curr_eval_results_path, "w") as f:
-        json.dump(evaluation_results, f)
+        json.dump(evaluation_results_native, f)
 
     if checkpointing_config.save_checkpoint_repo_id is not None:
         upload_folder(
