@@ -658,19 +658,34 @@ class PicoForTokenClassification(PreTrainedModel):
     config_class = PicoHFConfig
     _no_split_modules = ["PicoBlock", "Attention", "SwiGLU", "RMSNorm"]
 
-    def __init__(self, config: PicoHFConfig):
+    def __init__(self, config: PicoHFConfig, num_labels: int):
+        # Set the number of labels in the config
+        config.num_labels = num_labels
         super().__init__(config)
         # Initialize the base Pico model.
         self.pico = Pico(config)
         # Create a token classification head.
-        # It is assumed that the config contains an attribute `num_labels`.
-        num_labels = getattr(config, "num_labels", 2)  # default to 2 if not provided
         self.classifier = nn.Linear(config.d_model, num_labels)
 
+    @classmethod
+    def from_pretrained(cls, model_path: str, num_labels: int, **kwargs):
+        """
+        Loads the config from the model_path and then instantiates the model.
+        """
+        # Load configuration from the checkpoint directory
+        config = PicoHFConfig.from_pretrained(model_path, **kwargs)
+        config.num_labels = num_labels
+        # Instantiate the model using the updated __init__
+        model = cls(config, num_labels)
+        # Load the state_dict. You might need to adjust this if your checkpoint
+        # structure differs from what HF expects.
+        state_dict = torch.load(model_path, map_location="cpu")
+        model.load_state_dict(state_dict, strict=False)
+        return model
+
     def forward(self, input_ids: torch.Tensor, **kwargs) -> TokenClassifierOutput:
-        # Forward pass through Pico with return_hidden=True so that we get hidden representations.
-        # The Pico.forward method will then return (logits, hidden_states, past_key_values)
+        # Use Pico to obtain hidden states (make sure return_hidden=True is supported)
         _, hidden_states, _ = self.pico(input_ids, return_hidden=True, **kwargs)
-        # Pass the hidden states through the classification head for token-level predictions.
+        # Pass hidden states through the token classification head.
         token_logits = self.classifier(hidden_states)
         return TokenClassifierOutput(logits=token_logits)
