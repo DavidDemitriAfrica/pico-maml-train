@@ -4,20 +4,20 @@
 
 data:
   dataloader:
-    batch_size: 32
+    batch_size: 16
   
 checkpointing:
-  run_name: "test-40"
-  save_every_n_steps: 50
+  run_name: "test-41"
+  save_every_n_steps: 100
 
   save_checkpoint_repo_id: "davidafrica/pico-maml"
 
   learning_dynamics:
-    batch_size: 16
+    batch_size: 8
 
 model:
-    d_model: 96
-    activation_hidden_dim: 384
+    d_model: 48
+    activation_hidden_dim: 192
 
 evaluation:
   metrics:
@@ -26,11 +26,11 @@ evaluation:
     dataset_name: "universalner/universal_ner"
     dataset_config: "en_pud"  # Choose one from: ['ceb_gja', 'zh_gsd', 'zh_gsdsimp', 'zh_pud', ...]
     dataset_split: "test"
-    batch_size: 32
+    batch_size: 16
 
 monitoring:
   logging:
-    log_every_n_steps: 10
+    log_every_n_steps: 20
 
 training:
   max_steps: 10000
@@ -52,4 +52,4 @@ smlmt:
   query_per_class: 3       # Q: number of query sentences per class
   smlmt_weight: 1  # weight to scale the meta–learning loss relative to the supervised loss
   inner_lr: 0.001
-  inner_steps: 2
+  inner_steps: 5
