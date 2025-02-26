@@ -7,7 +7,7 @@ data:
     batch_size: 16
   
 checkpointing:
-  run_name: "multigpu-test-48"
+  run_name: "multigpu-test-49"
   save_every_n_steps: 100
 
   save_checkpoint_repo_id: "davidafrica/pico-maml"
@@ -47,7 +47,7 @@ training:
 
 smlmt:
   enabled: true
-  probability: 0.2        # probability that the meta–learning component is computed on any given iteration
+  probability: 0        # probability that the meta–learning component is computed on any given iteration
   num_classes: 3           # K: number of target words per task
   support_per_class: 3     # S: number of support sentences per class
   query_per_class: 3       # Q: number of query sentences per class
