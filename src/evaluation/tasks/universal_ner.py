@@ -60,7 +60,6 @@ def run_universal_ner_evaluation(
         inputs = tokenizer(
             tokens,
             is_split_into_words=True,
-            return_offsets_mapping=True,  # so we can merge subwords later
             truncation=True,
             max_length=ner_config.max_length,
             return_tensors="pt",
