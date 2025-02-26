@@ -419,6 +419,10 @@ def save_learning_dynamics_states(
 
             for entry in learning_dynamics_dataset:
                 input_ids = entry["input_ids"]
+                # If the first element is also a list, flatten
+                if len(input_ids) > 0 and isinstance(input_ids[0], list):
+                    # Flatten from 2D -> 1D
+                    input_ids = [tok for row in input_ids for tok in row]
                 decoded_text = tokenizer.decode(input_ids, skip_special_tokens=True)
                 detokenized_dataset["input_ids"].append(input_ids)
                 detokenized_dataset["text"].append(decoded_text)
