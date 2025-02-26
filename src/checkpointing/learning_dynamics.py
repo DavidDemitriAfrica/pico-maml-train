@@ -106,6 +106,14 @@ class CheckpointStateExtractor:
                 # of the model parameters.
                 outputs, _ = self.model(input_ids)
                 outputs = outputs.transpose(1, 2)
+
+                if outputs.dim() == 4:
+                    p, b, v, s = outputs.shape
+                    outputs = outputs.reshape(p * b, v, s)  # => (p*b, vocab, seq_len)
+                if labels.dim() == 3:
+                    # e.g. (p, b, seq_len)
+                    p2, b2, s2 = labels.shape
+                    labels = labels.reshape(p2 * b2, s2)  # => (p*b, seq_len)
                 loss = F.cross_entropy(outputs, labels)
                 self.fabric.backward(loss, model=self.model)
 
