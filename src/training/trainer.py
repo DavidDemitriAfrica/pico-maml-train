@@ -502,7 +502,6 @@ class Trainer:
                 training_batch["input_ids"].extend(gathered_input_ids.tolist())
 
             # Forward pass for supervised loss.
-            print("Shape right before model:", _input_ids.shape)
             model_output, _ = self.model(input_ids)
             model_output = model_output.transpose(1, 2)
             supervised_loss = F.cross_entropy(model_output, labels)
