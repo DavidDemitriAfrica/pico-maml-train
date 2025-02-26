@@ -123,6 +123,12 @@ class Trainer:
             self.model.classifier_smlmt = torch.nn.Linear(
                 self.configs["model"].d_model, self.smlmt_num_classes
             )
+            if self.fabric._precision == "bf16-mixed":  # check BF16
+                dtype = torch.bfloat16
+                device = self.fabric.device
+                self.model.classifier_smlmt = self.model.classifier_smlmt.to(
+                    device, dtype=dtype
+                )
             print(f"SMLMT enabled with probability {self.smlmt_probability}")
 
         # Wrap with Fabric
@@ -560,12 +566,7 @@ class Trainer:
                 classifier_optimizer = torch.optim.SGD(
                     self.model.classifier_smlmt.parameters(), lr=inner_lr
                 )
-                if self.fabric._precision == "bf16-mixed":
-                    dtype = torch.bfloat16
-                    device = self.fabric.device
-                    self.model.classifier_smlmt = self.model.classifier_smlmt.to(
-                        device, dtype=dtype
-                    )
+
                 with higher.innerloop_ctx(
                     self.model.classifier_smlmt,
                     classifier_optimizer,
