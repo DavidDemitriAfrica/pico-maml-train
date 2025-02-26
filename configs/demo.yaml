@@ -13,11 +13,11 @@ checkpointing:
   save_checkpoint_repo_id: "davidafrica/pico-maml"
 
   learning_dynamics:
-    batch_size: 8
+    batch_size: 256
 
 model:
-    d_model: 48
-    activation_hidden_dim: 192
+    d_model: 96
+    activation_hidden_dim: 384
 
 evaluation:
   metrics:
@@ -26,7 +26,7 @@ evaluation:
     dataset_name: "universalner/universal_ner"
     dataset_config: "en_pud"  # Choose one from: ['ceb_gja', 'zh_gsd', 'zh_gsdsimp', 'zh_pud', ...]
     dataset_split: "test"
-    batch_size: 16
+    batch_size: 32
 
 monitoring:
   logging:
