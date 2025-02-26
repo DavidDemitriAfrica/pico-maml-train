@@ -503,6 +503,19 @@ class Pico(nn.Module):
         its own KV cache which is stored as a tuple. The whole model then stores a tuple of these
         KV caches (so a tuple of tuples).
         """
+        # --- 1) Check for extra pipeline/tp dimension ---
+        if input_ids.dim() == 3:
+            # shape is (p, bsz, seq_len)
+            # Flatten the first two dims:
+            p, bsz, seq_len = input_ids.shape
+            input_ids = input_ids.reshape(p * bsz, seq_len)
+
+            # If you also have an attention_mask of shape (p, bsz, seq_len), do the same:
+            if attention_mask is not None and attention_mask.dim() == 3:
+                _, bsz_m, seq_len_m = attention_mask.shape
+                if bsz_m == bsz and seq_len_m == seq_len:
+                    attention_mask = attention_mask.reshape(p * bsz_m, seq_len_m)
+
         cached_key_values = () if use_cache else None
 
         batch_size = input_ids.shape[0]
