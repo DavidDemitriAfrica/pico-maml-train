@@ -535,10 +535,18 @@ class Trainer:
                 )
 
                 support_inputs = self.tokenizer(
-                    support_texts, return_tensors="pt", padding=True, truncation=True
+                    support_texts,
+                    return_tensors="pt",
+                    padding=True,
+                    truncation=True,
+                    max_length=self.configs["smlmt"].max_length,
                 )
                 query_inputs = self.tokenizer(
-                    query_texts, return_tensors="pt", padding=True, truncation=True
+                    query_texts,
+                    return_tensors="pt",
+                    padding=True,
+                    truncation=True,
+                    max_length=self.configs["smlmt"].max_length,
                 )
                 for key in support_inputs:
                     support_inputs[key] = support_inputs[key].to(self.fabric.device)
