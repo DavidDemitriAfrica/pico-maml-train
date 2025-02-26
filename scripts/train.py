@@ -7,6 +7,7 @@ A minimal script to train the Pico language model. In practice, you should just 
 import click
 from pathlib import Path
 from src.training.trainer import Trainer
+import torch
 
 
 @click.command()
@@ -18,6 +19,7 @@ from src.training.trainer import Trainer
 )
 def main(config_path: Path) -> None:
     """Train the Pico language model using the specified configuration."""
+    torch.set_float32_matmul_precision("medium")
 
     trainer = Trainer(config_path=str(config_path))
     trainer.train()
