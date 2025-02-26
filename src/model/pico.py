@@ -673,8 +673,6 @@ class PicoForTokenClassification(PreTrainedModel):
             self.classifier = self.pico.token_classifier
         else:
             self.classifier = nn.Linear(config.d_model, effective_num_labels)
-        # <---- IMPORTANT: Override model_type to trick the HF pipeline
-        self.config.model_type = "bert"  # (or any supported type)
 
     def forward(self, input_ids: torch.Tensor, **kwargs) -> TokenClassifierOutput:
         # Run the Pico model and get hidden states (by setting return_hidden=True)
