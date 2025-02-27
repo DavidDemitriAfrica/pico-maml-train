@@ -512,7 +512,7 @@ def _initialize_log_file(checkpointing_config: CheckpointingConfig) -> str:
     return log_file_path
 
 
-@use_backoff()
+# @use_backoff()
 def initialize_experiment_tracker(
     monitoring_config: MonitoringConfig, checkpointing_config: CheckpointingConfig
 ):
@@ -621,7 +621,7 @@ def initialize_logging(
 ########################################################
 
 
-@use_backoff()
+# @use_backoff()
 def initialize_hf_checkpointing(
     checkpointing_config: CheckpointingConfig, fabric: L.Fabric
 ):
