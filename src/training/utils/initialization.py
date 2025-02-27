@@ -36,7 +36,6 @@ from src.config import (
     SMLMTConfig,
 )
 
-from src.training.utils.io import use_backoff
 
 from lightning.fabric.loggers import Logger as FabricLogger
 
@@ -223,7 +222,7 @@ def initialize_fabric(
 ########################################################
 
 
-@use_backoff(max_retries=20)
+# @use_backoff(max_retries=20)
 def initialize_dataset(
     data_config: DataConfig,
     fabric: L.Fabric,

@@ -8,7 +8,6 @@ import os
 import json
 import numpy as np
 from huggingface_hub import upload_folder
-from src.training.utils.io import use_backoff
 
 # typing imports
 from typing import Dict, Any
@@ -32,7 +31,7 @@ def convert_to_native(obj):
         return obj
 
 
-@use_backoff()
+# @use_backoff()
 def save_evaluation_results(
     checkpointing_config: CheckpointingConfig,
     checkpoint_step: int,
