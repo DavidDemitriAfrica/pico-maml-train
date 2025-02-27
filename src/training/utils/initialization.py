@@ -17,9 +17,10 @@ import yaml
 from dataclasses import fields, is_dataclass
 from datetime import datetime
 import wandb
-from huggingface_hub import create_repo, create_branch
+from huggingface_hub import add_collection_item, create_repo, create_branch
 from wandb.integration.lightning.fabric import WandbLogger
 from datasets import load_dataset, Dataset, DownloadConfig
+from datasets import config as datasets_config
 from torch.utils.data import DataLoader
 from transformers import AutoTokenizer
 from typing import Optional, Dict, Union
@@ -34,6 +35,8 @@ from src.config import (
     CheckpointingConfig,
     SMLMTConfig,
 )
+
+from src.training.utils.io import use_backoff
 
 from lightning.fabric.loggers import Logger as FabricLogger
 
@@ -220,6 +223,7 @@ def initialize_fabric(
 ########################################################
 
 
+@use_backoff(max_retries=20)
 def initialize_dataset(
     data_config: DataConfig,
     fabric: L.Fabric,
@@ -249,6 +253,8 @@ def initialize_dataset(
         Optional[int]: Number of steps to fast-forward the iterator by, if return_fast_forward_steps is True.
     """
 
+    datasets_config.STREAMING_READ_MAX_RETRIES = 40  # default is 20
+    datasets_config.STREAMING_READ_RETRY_INTERVAL = 10  # default is 5
     download_config = DownloadConfig(
         max_retries=10,  # default is 1 and can lead to pre-mature HTTPS errors
     )
@@ -506,6 +512,7 @@ def _initialize_log_file(checkpointing_config: CheckpointingConfig) -> str:
     return log_file_path
 
 
+@use_backoff()
 def initialize_experiment_tracker(
     monitoring_config: MonitoringConfig, checkpointing_config: CheckpointingConfig
 ):
@@ -614,6 +621,7 @@ def initialize_logging(
 ########################################################
 
 
+@use_backoff()
 def initialize_hf_checkpointing(
     checkpointing_config: CheckpointingConfig, fabric: L.Fabric
 ):
@@ -635,7 +643,21 @@ def initialize_hf_checkpointing(
     huggingface_repo_id = checkpointing_config.save_checkpoint_repo_id
     assert huggingface_repo_id is not None, "save_checkpoint_repo_id must be provided."
 
-    create_repo(huggingface_repo_id, exist_ok=True)
+    repo = create_repo(huggingface_repo_id, exist_ok=True)
+
+    # can create a repo without a specified namespace (will default to username)
+    # however the rest of the HF calls need the fully qualified name
+    # this is returned by create repo, so we update the config for later calls
+    checkpointing_config.save_checkpoint_repo_id = repo.repo_id
+    huggingface_repo_id = repo.repo_id
+
+    if checkpointing_config.hf_collection_slug:
+        add_collection_item(
+            checkpointing_config.hf_collection_slug,
+            huggingface_repo_id,
+            repo.repo_type,
+            exists_ok=True,
+        )
 
     create_branch(
         repo_id=huggingface_repo_id,
