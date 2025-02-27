@@ -579,7 +579,7 @@ class Trainer:
                             attention_mask=support_inputs["attention_mask"],
                             return_hidden=True,
                         )
-                        support_repr = support_hidden.mean(dim=1)
+                        support_repr = support_hidden.mean(dim=1).bfloat16()
                         support_preds = fclassifier(support_repr)
                         support_loss = F.cross_entropy(support_preds, support_labels)
                         diffopt.step(support_loss)
@@ -590,7 +590,7 @@ class Trainer:
                         attention_mask=query_inputs["attention_mask"],
                         return_hidden=True,
                     )
-                    query_repr = query_hidden.mean(dim=1)
+                    query_repr = query_hidden.mean(dim=1).bfloat16()
                     query_preds = fclassifier(query_repr)
                     meta_loss = F.cross_entropy(query_preds, query_labels)
 
