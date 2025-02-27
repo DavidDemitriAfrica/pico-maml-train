@@ -17,6 +17,7 @@ import deepspeed
 
 from src.model import Pico
 
+
 # typing imports
 import torch.nn as nn
 from typing import Dict, Optional
@@ -231,15 +232,19 @@ class CheckpointStateExtractor:
             # check if there is already a key for the module name
             if module_name not in checkpoint_activations:
                 # if there is no key, then we create a new key and store the hidden states
-                checkpoint_activations[module_name] = gathered_activations
-
+                checkpoint_activations[module_name] = (
+                    gathered_activations.detach().cpu()
+                )
                 # extract the weight matrix just once
                 weight_matrix = module.weight.detach().cpu()
                 checkpoint_weights[module_name] = weight_matrix
             else:
                 # if there is already a key, then we concatenate the new hidden states to the existing ones
                 checkpoint_activations[module_name] = torch.cat(
-                    (checkpoint_activations[module_name], gathered_activations)
+                    (
+                        checkpoint_activations[module_name],
+                        gathered_activations.detach().cpu(),
+                    )
                 )
 
         return _forward_hook
@@ -295,7 +300,7 @@ def compute_learning_dynamics_states(
     )
 
     # Create a new model instance with the same parameters but zero gradients.
-    _model = Pico(model.config, fabric=fabric)
+    _model = Pico(model.config)
     # Get the full state dict from the current model.
     state_dict = model.state_dict()
     # Filter out keys that start with 'classifier'.

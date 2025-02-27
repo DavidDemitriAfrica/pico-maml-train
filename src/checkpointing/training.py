@@ -9,10 +9,12 @@ in a subdirectory. This is done to facilitate easier versioning of the HuggingFa
 
 import os
 import yaml
-from huggingface_hub import upload_folder
+from huggingface_hub import upload_folder, upload_file
 from lightning.fabric.utilities.seed import _collect_rng_states, _set_rng_states
 from lightning.fabric.strategies import DeepSpeedStrategy
+from dataclasses import asdict
 
+from src.training.utils.io import use_backoff
 
 # typing imports
 from torch.optim import Optimizer
@@ -24,6 +26,7 @@ from src.config import CheckpointingConfig
 from typing import Dict, Any, Union, Tuple
 
 
+@use_backoff()
 def load_checkpoint(
     checkpointing_config: CheckpointingConfig,
     checkpoint_step: Union[str, int],
@@ -91,6 +94,7 @@ def load_checkpoint(
     return model, optimizer, lr_scheduler, checkpoint_step
 
 
+@use_backoff()
 def save_checkpoint(
     configs: Dict[str, Any],
     checkpoint_step: int,
@@ -204,10 +208,14 @@ def save_checkpoint(
 
     if fabric.global_rank == 0:
         # Save config in fabric directory
-        config_path = os.path.join(fabric_checkpoint_path, "config.yaml")
+        config_path = os.path.join(run_path, "training_config.yaml")
         if not os.path.exists(config_path):
+            # Converting dataclasses to joined dicts and saving to file
+            _training_config = {}
+            for config_name, config in configs.items():
+                _training_config[config_name] = asdict(config)
             with open(config_path, "w") as f:
-                yaml.dump(configs, f)
+                yaml.dump(_training_config, f)
 
         # Update latest symlink
         latest_symlink_path = os.path.join(root_checkpoint_path, "latest")
@@ -242,6 +250,15 @@ def save_checkpoint(
                     revision=checkpointing_config.run_name,
                     token=os.getenv("HF_TOKEN"),
                 )
+
+            upload_file(
+                path_or_fileobj=config_path,
+                path_in_repo="training_config.yaml",
+                repo_id=checkpointing_config.save_checkpoint_repo_id,
+                commit_message=f"Saving Training Config -- Step {checkpoint_step}",
+                revision=checkpointing_config.run_name,
+                token=os.getenv("HF_TOKEN"),
+            )
 
             # Upload the fabric checkpoint directory
             upload_folder(
