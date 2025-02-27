@@ -572,6 +572,7 @@ class Trainer:
                     classifier_optimizer,
                     copy_initial_weights=True,
                 ) as (fclassifier, diffopt):
+                    fclassifier.to(torch.bfloat16)
                     for _ in range(inner_steps):
                         _, support_hidden, _ = self.model(
                             support_inputs["input_ids"],
