@@ -36,6 +36,7 @@ from src.config import (
     SMLMTConfig,
 )
 
+from src.training.utils.io import use_backoff
 
 from lightning.fabric.loggers import Logger as FabricLogger
 
@@ -222,7 +223,7 @@ def initialize_fabric(
 ########################################################
 
 
-# @use_backoff(max_retries=20)
+@use_backoff(max_retries=20)
 def initialize_dataset(
     data_config: DataConfig,
     fabric: L.Fabric,
@@ -511,7 +512,7 @@ def _initialize_log_file(checkpointing_config: CheckpointingConfig) -> str:
     return log_file_path
 
 
-# @use_backoff()
+@use_backoff()
 def initialize_experiment_tracker(
     monitoring_config: MonitoringConfig, checkpointing_config: CheckpointingConfig
 ):
@@ -620,7 +621,7 @@ def initialize_logging(
 ########################################################
 
 
-# @use_backoff()
+@use_backoff()
 def initialize_hf_checkpointing(
     checkpointing_config: CheckpointingConfig, fabric: L.Fabric
 ):
