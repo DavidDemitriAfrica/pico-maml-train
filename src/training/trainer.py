@@ -570,7 +570,7 @@ class Trainer:
                 with higher.innerloop_ctx(
                     self.model.classifier_smlmt,
                     classifier_optimizer,
-                    copy_initial_weights=True,
+                    copy_initial_weights=False,
                 ) as (fclassifier, diffopt):
                     fclassifier.to(torch.bfloat16)
                     for _ in range(inner_steps):
