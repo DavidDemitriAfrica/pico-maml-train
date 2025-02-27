@@ -608,21 +608,19 @@ class Trainer:
                 "training"
             ].optimization.gradient_accumulation_steps != 0
 
-            with self.fabric.no_backward_sync(
-                self.model, enabled=should_accumulate_gradients
-            ):
-                self.fabric.backward(
-                    total_loss
-                    / self.configs["training"].optimization.gradient_accumulation_steps,
-                    model=self.model,
-                )
-                if torch.isnan(total_loss) or torch.isinf(total_loss):
-                    interval_inf_or_nan_count += 1
-                else:
-                    interval_loss += (
-                        supervised_loss.item()
-                    )  # accumulate supervised loss
-                    interval_steps += 1
+            # with self.fabric.no_backward_sync(
+            #     self.model, enabled=should_accumulate_gradients
+            # ):
+            self.fabric.backward(
+                total_loss
+                / self.configs["training"].optimization.gradient_accumulation_steps,
+                model=self.model,
+            )
+            if torch.isnan(total_loss) or torch.isinf(total_loss):
+                interval_inf_or_nan_count += 1
+            else:
+                interval_loss += supervised_loss.item()  # accumulate supervised loss
+                interval_steps += 1
 
             # If we're still accumulating gradients, skip the optimizer step.
             if should_accumulate_gradients:
