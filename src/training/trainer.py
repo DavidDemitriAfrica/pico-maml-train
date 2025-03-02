@@ -194,7 +194,7 @@ class Trainer:
                 self.smlmt_sentences = self.configs["smlmt"]["sentences"]
             else:
                 self.smlmt_sentences = []
-                max_samples = 1000
+                max_samples = 10000
                 max_seq_len = self.configs["model"].max_seq_len  # e.g., 1024
                 # Try using indexing if the dataset supports __len__ and __getitem__
                 try:
