@@ -567,24 +567,62 @@ class Trainer:
                     self.model.classifier_smlmt.parameters(), lr=inner_lr
                 )
 
-                with higher.innerloop_ctx(
-                    self.model.classifier_smlmt,
-                    classifier_optimizer,
-                    copy_initial_weights=False,
-                ) as (fclassifier, diffopt):
-                    fclassifier.to(torch.bfloat16)
-                    for _ in range(inner_steps):
+                # Memory-efficient approach: split into non-tracked and tracked phases
+
+                # Phase 1: Perform N-1 steps without tracking gradients (memory efficient)
+                with torch.no_grad():
+                    # Store initial classifier parameters
+                    fast_weights = [
+                        p.clone() for p in self.model.classifier_smlmt.parameters()
+                    ]
+
+                    # First N-1 inner steps with no gradient tracking
+                    for i in range(inner_steps - 1):
+                        # Get embeddings from the model
                         _, support_hidden, _ = self.model(
                             support_inputs["input_ids"],
                             attention_mask=support_inputs["attention_mask"],
                             return_hidden=True,
                         )
                         support_repr = support_hidden.mean(dim=1).bfloat16()
-                        support_preds = fclassifier(support_repr)
-                        support_loss = F.cross_entropy(support_preds, support_labels)
-                        diffopt.step(support_loss)
 
-                    # Evaluate on the query set.
+                        # Manual forward with fast weights
+                        if len(fast_weights) == 2:  # Linear with bias
+                            support_preds = F.linear(
+                                support_repr, fast_weights[0], fast_weights[1]
+                            )
+                        else:  # Linear without bias
+                            support_preds = F.linear(support_repr, fast_weights[0])
+
+                        support_loss = F.cross_entropy(support_preds, support_labels)
+
+                        # Manual gradient computation and weight update
+                        grads = torch.autograd.grad(support_loss, fast_weights)
+                        fast_weights = [
+                            w - inner_lr * g for w, g in zip(fast_weights, grads)
+                        ]
+
+                # Phase 2: Final step with gradient tracking (for meta-gradients)
+                with higher.innerloop_ctx(
+                    self.model.classifier_smlmt,
+                    classifier_optimizer,
+                    track_higher_grads=True,
+                    override_params=dict(
+                        zip(["weight", "bias"][: len(fast_weights)], fast_weights)
+                    ),
+                ) as (fclassifier, diffopt):
+                    # One inner step with gradient tracking
+                    _, support_hidden, _ = self.model(
+                        support_inputs["input_ids"],
+                        attention_mask=support_inputs["attention_mask"],
+                        return_hidden=True,
+                    )
+                    support_repr = support_hidden.mean(dim=1).bfloat16()
+                    support_preds = fclassifier(support_repr)
+                    support_loss = F.cross_entropy(support_preds, support_labels)
+                    diffopt.step(support_loss)
+
+                    # Evaluate on query set with tracked gradients
                     _, query_hidden, _ = self.model(
                         query_inputs["input_ids"],
                         attention_mask=query_inputs["attention_mask"],
