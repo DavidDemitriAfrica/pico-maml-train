@@ -117,7 +117,7 @@ class SMLMTDataset(Dataset):
         support_per_class=5,
         query_per_class=5,
         mask_token="[MASK]",
-        num_tasks=1000,
+        num_tasks=10000,
     ):
         """
         Args:
