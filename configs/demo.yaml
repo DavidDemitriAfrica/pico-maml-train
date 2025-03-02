@@ -46,7 +46,7 @@ training:
     num_devices: 4
 
 smlmt:
-  enabled: true
+  enabled: false
   probability: 0.2        # probability that the meta–learning component is computed on any given iteration
   num_classes: 3           # K: number of target words per task
   support_per_class: 3     # S: number of support sentences per class
