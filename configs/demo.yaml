@@ -7,17 +7,17 @@
 #    batch_size: 16
   
 checkpointing:
-  run_name: "multigpu-large-test-1"
+  run_name: "multigpu-medium-test-1"
   save_every_n_steps: 100
 
   save_checkpoint_repo_id: "davidafrica/pico-maml"
 
   learning_dynamics:
-    batch_size: 128
+    batch_size: 256
 
 model:
-    d_model: 1536
-    activation_hidden_dim: 6144
+    d_model: 768
+    activation_hidden_dim: 3072
 
 evaluation:
   metrics:
@@ -26,7 +26,7 @@ evaluation:
     dataset_name: "universalner/universal_ner"
     dataset_config: "en_pud"  # Choose one from: ['ceb_gja', 'zh_gsd', 'zh_gsdsimp', 'zh_pud', ...]
     dataset_split: "test"
-    batch_size: 16
+    batch_size: 32
 
 monitoring:
   logging:
