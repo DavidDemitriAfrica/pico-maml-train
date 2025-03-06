@@ -452,105 +452,104 @@ class Trainer:
 
         self.fabric.barrier()
 
-
-def _meta_step(
-    self,
-    support_texts,
-    query_texts,
-    support_labels: torch.Tensor,
-    query_labels: torch.Tensor,
-) -> torch.Tensor:
-    """
-    Executes the meta-step (inner loop) for the SMLMT branch.
-    Tokenizes the support and query sentences, performs inner loop updates on a temporary
-    copy of the classifier parameters, and returns the meta loss computed on the query set.
-    """
-    # Tokenize support and query inputs.
-    support_inputs = self.tokenizer(
+    def _meta_step(
+        self,
         support_texts,
-        return_tensors="pt",
-        padding=True,
-        truncation=True,
-        max_length=self.configs["smlmt"].max_length,
-    )
-    query_inputs = self.tokenizer(
         query_texts,
-        return_tensors="pt",
-        padding=True,
-        truncation=True,
-        max_length=self.configs["smlmt"].max_length,
-    )
-    for key in support_inputs:
-        support_inputs[key] = support_inputs[key].to(self.fabric.device)
-    for key in query_inputs:
-        query_inputs[key] = query_inputs[key].to(self.fabric.device)
-
-    inner_lr = self.configs["smlmt"].inner_lr  # e.g., 1e-3
-    inner_steps = self.configs["smlmt"].inner_steps  # e.g., 1 or 5
-
-    # Initialize fast weights with gradient tracking.
-    fast_weights = [
-        p.detach().clone().requires_grad_(True)
-        for p in self.model.classifier_smlmt.parameters()
-    ]
-
-    # Phase 1: Perform inner loop steps with gradient enabled and detach after update for memory efficiency.
-    for _ in range(inner_steps - 1):
-        # Compute support loss with current fast weights.
-        _, support_hidden, _ = self.model(
-            support_inputs["input_ids"],
-            attention_mask=support_inputs["attention_mask"],
-            return_hidden=True,
+        support_labels: torch.Tensor,
+        query_labels: torch.Tensor,
+    ) -> torch.Tensor:
+        """
+        Executes the meta-step (inner loop) for the SMLMT branch.
+        Tokenizes the support and query sentences, performs inner loop updates on a temporary
+        copy of the classifier parameters, and returns the meta loss computed on the query set.
+        """
+        # Tokenize support and query inputs.
+        support_inputs = self.tokenizer(
+            support_texts,
+            return_tensors="pt",
+            padding=True,
+            truncation=True,
+            max_length=self.configs["smlmt"].max_length,
         )
-        support_repr = support_hidden.mean(dim=1).bfloat16()
-        if len(fast_weights) == 2:  # Linear with bias.
-            support_preds = F.linear(support_repr, fast_weights[0], fast_weights[1])
-        else:  # Linear without bias.
-            support_preds = F.linear(support_repr, fast_weights[0])
-        support_loss = F.cross_entropy(support_preds, support_labels)
+        query_inputs = self.tokenizer(
+            query_texts,
+            return_tensors="pt",
+            padding=True,
+            truncation=True,
+            max_length=self.configs["smlmt"].max_length,
+        )
+        for key in support_inputs:
+            support_inputs[key] = support_inputs[key].to(self.fabric.device)
+        for key in query_inputs:
+            query_inputs[key] = query_inputs[key].to(self.fabric.device)
 
-        # Compute gradients with respect to fast_weights.
-        grads = torch.autograd.grad(support_loss, fast_weights, create_graph=False)
-        # Update fast_weights and detach them, re-enabling grad.
+        inner_lr = self.configs["smlmt"].inner_lr  # e.g., 1e-3
+        inner_steps = self.configs["smlmt"].inner_steps  # e.g., 1 or 5
+
+        # Initialize fast weights with gradient tracking.
         fast_weights = [
-            (w - inner_lr * g).detach().requires_grad_(True)
-            for w, g in zip(fast_weights, grads)
+            p.detach().clone().requires_grad_(True)
+            for p in self.model.classifier_smlmt.parameters()
         ]
 
-    # Phase 2: Final inner step with gradient tracking using higher innerloop context.
-    classifier_optimizer = torch.optim.SGD(
-        self.model.classifier_smlmt.parameters(), lr=inner_lr
-    )
-    with higher.innerloop_ctx(
-        self.model.classifier_smlmt,
-        classifier_optimizer,
-        track_higher_grads=True,
-        override_params=dict(
-            zip(["weight", "bias"][: len(fast_weights)], fast_weights)
-        ),
-    ) as (fclassifier, diffopt):
-        # Inner step on support set with gradient tracking.
-        _, support_hidden, _ = self.model(
-            support_inputs["input_ids"],
-            attention_mask=support_inputs["attention_mask"],
-            return_hidden=True,
-        )
-        support_repr = support_hidden.mean(dim=1).bfloat16()
-        support_preds = fclassifier(support_repr)
-        support_loss = F.cross_entropy(support_preds, support_labels)
-        diffopt.step(support_loss)
+        # Phase 1: Perform inner loop steps with gradient enabled and detach after update for memory efficiency.
+        for _ in range(inner_steps - 1):
+            # Compute support loss with current fast weights.
+            _, support_hidden, _ = self.model(
+                support_inputs["input_ids"],
+                attention_mask=support_inputs["attention_mask"],
+                return_hidden=True,
+            )
+            support_repr = support_hidden.mean(dim=1).bfloat16()
+            if len(fast_weights) == 2:  # Linear with bias.
+                support_preds = F.linear(support_repr, fast_weights[0], fast_weights[1])
+            else:  # Linear without bias.
+                support_preds = F.linear(support_repr, fast_weights[0])
+            support_loss = F.cross_entropy(support_preds, support_labels)
 
-        # Evaluate on query set.
-        _, query_hidden, _ = self.model(
-            query_inputs["input_ids"],
-            attention_mask=query_inputs["attention_mask"],
-            return_hidden=True,
-        )
-        query_repr = query_hidden.mean(dim=1).bfloat16()
-        query_preds = fclassifier(query_repr)
-        meta_loss = F.cross_entropy(query_preds, query_labels)
+            # Compute gradients with respect to fast_weights.
+            grads = torch.autograd.grad(support_loss, fast_weights, create_graph=False)
+            # Update fast_weights and detach them, re-enabling grad.
+            fast_weights = [
+                (w - inner_lr * g).detach().requires_grad_(True)
+                for w, g in zip(fast_weights, grads)
+            ]
 
-    return meta_loss
+        # Phase 2: Final inner step with gradient tracking using higher innerloop context.
+        classifier_optimizer = torch.optim.SGD(
+            self.model.classifier_smlmt.parameters(), lr=inner_lr
+        )
+        with higher.innerloop_ctx(
+            self.model.classifier_smlmt,
+            classifier_optimizer,
+            track_higher_grads=True,
+            override_params=dict(
+                zip(["weight", "bias"][: len(fast_weights)], fast_weights)
+            ),
+        ) as (fclassifier, diffopt):
+            # Inner step on support set with gradient tracking.
+            _, support_hidden, _ = self.model(
+                support_inputs["input_ids"],
+                attention_mask=support_inputs["attention_mask"],
+                return_hidden=True,
+            )
+            support_repr = support_hidden.mean(dim=1).bfloat16()
+            support_preds = fclassifier(support_repr)
+            support_loss = F.cross_entropy(support_preds, support_labels)
+            diffopt.step(support_loss)
+
+            # Evaluate on query set.
+            _, query_hidden, _ = self.model(
+                query_inputs["input_ids"],
+                attention_mask=query_inputs["attention_mask"],
+                return_hidden=True,
+            )
+            query_repr = query_hidden.mean(dim=1).bfloat16()
+            query_preds = fclassifier(query_repr)
+            meta_loss = F.cross_entropy(query_preds, query_labels)
+
+        return meta_loss
 
     def _training_loop(self) -> int:
         """Execute the main training loop.
