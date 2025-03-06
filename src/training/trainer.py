@@ -617,13 +617,17 @@ class Trainer:
 
             # --- 2. Optional MAML (SMLMT) Meta–Loss ---
             meta_loss = None
-            if self.smlmt_enabled and (random.random() < self.smlmt_probability):
-                local_flag = random.random() < self.smlmt_probability
-                flag_value = 1.0 if local_flag else 0.0
-                # Broadcast a list containing the flag_value (a picklable Python float)
-                flag_list = self.fabric.broadcast_object_list([flag_value], src=0)
-                should_compute_meta = bool(flag_list[0] > 0.5)
-
+            if self.smlmt_enabled:
+                # Only rank 0 decides whether to trigger the meta branch.
+                if self.fabric.global_rank == 0:
+                    flag_value = (
+                        1.0 if random.random() < self.smlmt_probability else 0.0
+                    )
+                else:
+                    flag_value = 0.0  # Placeholder for non-rank0 processes.
+                flag_tensor = torch.tensor(flag_value, device=self.fabric.device)
+                flag_tensor = self.fabric.broadcast(flag_tensor, src=0)
+                should_compute_meta = bool(flag_tensor.item() > 0.5)
                 if should_compute_meta:
                     self.log("MAML SMLMT branch triggered", level=logging.INFO)
 
