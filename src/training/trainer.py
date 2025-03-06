@@ -452,6 +452,101 @@ class Trainer:
 
         self.fabric.barrier()
 
+    def _meta_step(
+        self,
+        support_texts,
+        query_texts,
+        support_labels: torch.Tensor,
+        query_labels: torch.Tensor,
+    ) -> torch.Tensor:
+        """
+        Executes the meta-step (inner loop) for the SMLMT branch.
+        This method tokenizes the support and query sentences, performs inner loop updates on a temporary
+        copy of the classifier parameters, and returns the meta loss computed on the query set.
+        """
+        # Tokenize support and query inputs
+        support_inputs = self.tokenizer(
+            support_texts,
+            return_tensors="pt",
+            padding=True,
+            truncation=True,
+            max_length=self.configs["smlmt"].max_length,
+        )
+        query_inputs = self.tokenizer(
+            query_texts,
+            return_tensors="pt",
+            padding=True,
+            truncation=True,
+            max_length=self.configs["smlmt"].max_length,
+        )
+        for key in support_inputs:
+            support_inputs[key] = support_inputs[key].to(self.fabric.device)
+        for key in query_inputs:
+            query_inputs[key] = query_inputs[key].to(self.fabric.device)
+
+        inner_lr = self.configs["smlmt"].inner_lr  # e.g., 1e-3
+        inner_steps = self.configs["smlmt"].inner_steps  # e.g., 1 or 5
+
+        # Create a copy of the classifier parameters for the inner loop
+        fast_weights = [
+            p.detach().clone() for p in self.model.classifier_smlmt.parameters()
+        ]
+
+        # Phase 1: Inner loop steps WITHOUT tracking gradients (memory efficient)
+        with torch.no_grad():
+            for _ in range(inner_steps - 1):
+                _, support_hidden, _ = self.model(
+                    support_inputs["input_ids"],
+                    attention_mask=support_inputs["attention_mask"],
+                    return_hidden=True,
+                )
+                support_repr = support_hidden.mean(dim=1).bfloat16()
+                if len(fast_weights) == 2:  # Linear with bias
+                    support_preds = F.linear(
+                        support_repr, fast_weights[0], fast_weights[1]
+                    )
+                else:  # Linear without bias
+                    support_preds = F.linear(support_repr, fast_weights[0])
+                support_loss = F.cross_entropy(support_preds, support_labels)
+                grads = torch.autograd.grad(
+                    support_loss, fast_weights, retain_graph=False
+                )
+                fast_weights = [w - inner_lr * g for w, g in zip(fast_weights, grads)]
+
+        # Phase 2: Final inner step WITH gradient tracking to compute meta-gradients
+        classifier_optimizer = torch.optim.SGD(
+            self.model.classifier_smlmt.parameters(), lr=inner_lr
+        )
+        with higher.innerloop_ctx(
+            self.model.classifier_smlmt,
+            classifier_optimizer,
+            track_higher_grads=True,
+            override_params=dict(
+                zip(["weight", "bias"][: len(fast_weights)], fast_weights)
+            ),
+        ) as (fclassifier, diffopt):
+            # Inner step on support set with gradient tracking.
+            _, support_hidden, _ = self.model(
+                support_inputs["input_ids"],
+                attention_mask=support_inputs["attention_mask"],
+                return_hidden=True,
+            )
+            support_repr = support_hidden.mean(dim=1).bfloat16()
+            support_preds = fclassifier(support_repr)
+            support_loss = F.cross_entropy(support_preds, support_labels)
+            diffopt.step(support_loss)
+
+            # Evaluate on query set
+            _, query_hidden, _ = self.model(
+                query_inputs["input_ids"],
+                attention_mask=query_inputs["attention_mask"],
+                return_hidden=True,
+            )
+            query_repr = query_hidden.mean(dim=1).bfloat16()
+            query_preds = fclassifier(query_repr)
+            meta_loss = F.cross_entropy(query_preds, query_labels)
+        return meta_loss
+
     def _training_loop(self) -> int:
         """Execute the main training loop.
 
@@ -515,126 +610,51 @@ class Trainer:
             # --- 2. Optional MAML (SMLMT) Meta–Loss ---
             meta_loss = None
             if self.smlmt_enabled and (random.random() < self.smlmt_probability):
-                self.log("MAML SMLMT branch triggered", level=logging.INFO)
-
-                # Generate one SMLMT task (episode)
-                task_generator = SMLMTTask(
-                    self.smlmt_sentences,
-                    self.smlmt_vocabulary,
-                    num_classes=self.smlmt_num_classes,
-                    support_per_class=self.smlmt_support,
-                    query_per_class=self.smlmt_query,
-                    mask_token=self.tokenizer.mask_token
-                    if hasattr(self.tokenizer, "mask_token")
-                    else "[MASK]",
+                # Synchronize the decision to run the meta–step across all processes.
+                local_flag = random.random() < self.smlmt_probability
+                flag_tensor = torch.tensor(
+                    [1.0 if local_flag else 0.0], device=self.fabric.device
                 )
-                support_set, query_set = task_generator.generate_task()
+                # Broadcast flag from rank 0 to all GPUs.
+                flag_tensor = self.fabric.broadcast(flag_tensor, src=0)
+                should_compute_meta = bool(flag_tensor.item() > 0.5)
 
-                # Tokenize support and query sentences and obtain labels.
-                support_texts = [sent for (sent, _) in support_set]
-                query_texts = [sent for (sent, _) in query_set]
-                support_labels = torch.tensor(
-                    [label for (_, label) in support_set], device=self.fabric.device
-                )
-                query_labels = torch.tensor(
-                    [label for (_, label) in query_set], device=self.fabric.device
-                )
+                if should_compute_meta:
+                    self.log("MAML SMLMT branch triggered", level=logging.INFO)
 
-                support_inputs = self.tokenizer(
-                    support_texts,
-                    return_tensors="pt",
-                    padding=True,
-                    truncation=True,
-                    max_length=self.configs["smlmt"].max_length,
-                )
-                query_inputs = self.tokenizer(
-                    query_texts,
-                    return_tensors="pt",
-                    padding=True,
-                    truncation=True,
-                    max_length=self.configs["smlmt"].max_length,
-                )
-                for key in support_inputs:
-                    support_inputs[key] = support_inputs[key].to(self.fabric.device)
-                for key in query_inputs:
-                    query_inputs[key] = query_inputs[key].to(self.fabric.device)
-
-                # Set inner loop hyperparameters.
-                inner_lr = self.configs["smlmt"].inner_lr  # e.g., 1e-3
-                inner_steps = self.configs["smlmt"].inner_steps  # e.g., 1 or 5
-
-                classifier_optimizer = torch.optim.SGD(
-                    self.model.classifier_smlmt.parameters(), lr=inner_lr
-                )
-
-                # Memory-efficient approach: split into non-tracked and tracked phases
-
-                # Phase 1: Perform N-1 steps without tracking gradients (memory efficient)
-                with torch.no_grad():
-                    # Store initial classifier parameters
-                    fast_weights = [
-                        p.clone() for p in self.model.classifier_smlmt.parameters()
-                    ]
-
-                    # First N-1 inner steps with no gradient tracking
-                    for i in range(inner_steps - 1):
-                        # Get embeddings from the model
-                        _, support_hidden, _ = self.model(
-                            support_inputs["input_ids"],
-                            attention_mask=support_inputs["attention_mask"],
-                            return_hidden=True,
+                    # Generate one SMLMT task (episode)
+                    task_generator = SMLMTTask(
+                        self.smlmt_sentences,
+                        self.smlmt_vocabulary,
+                        num_classes=self.smlmt_num_classes,
+                        support_per_class=self.smlmt_support,
+                        query_per_class=self.smlmt_query,
+                        mask_token=self.tokenizer.mask_token
+                        if hasattr(self.tokenizer, "mask_token")
+                        else "[MASK]",
+                    )
+                    support_set, query_set = task_generator.generate_task()
+                    support_texts = [sent for (sent, _) in support_set]
+                    query_texts = [sent for (sent, _) in query_set]
+                    support_labels = torch.tensor(
+                        [label for (_, label) in support_set], device=self.fabric.device
+                    )
+                    query_labels = torch.tensor(
+                        [label for (_, label) in query_set], device=self.fabric.device
+                    )
+                    try:
+                        meta_loss = self._meta_step(
+                            support_texts, query_texts, support_labels, query_labels
                         )
-                        support_repr = support_hidden.mean(dim=1).bfloat16()
+                    except Exception as e:
+                        self.log(f"Error in meta–step: {e}", level=logging.ERROR)
+                        meta_loss = torch.tensor(0.0, device=self.fabric.device)
 
-                        # Manual forward with fast weights
-                        if len(fast_weights) == 2:  # Linear with bias
-                            support_preds = F.linear(
-                                support_repr, fast_weights[0], fast_weights[1]
-                            )
-                        else:  # Linear without bias
-                            support_preds = F.linear(support_repr, fast_weights[0])
-
-                        support_loss = F.cross_entropy(support_preds, support_labels)
-
-                        # Manual gradient computation and weight update
-                        grads = torch.autograd.grad(support_loss, fast_weights)
-                        fast_weights = [
-                            w - inner_lr * g for w, g in zip(fast_weights, grads)
-                        ]
-
-                # Phase 2: Final step with gradient tracking (for meta-gradients)
-                with higher.innerloop_ctx(
-                    self.model.classifier_smlmt,
-                    classifier_optimizer,
-                    track_higher_grads=True,
-                    override_params=dict(
-                        zip(["weight", "bias"][: len(fast_weights)], fast_weights)
-                    ),
-                ) as (fclassifier, diffopt):
-                    # One inner step with gradient tracking
-                    _, support_hidden, _ = self.model(
-                        support_inputs["input_ids"],
-                        attention_mask=support_inputs["attention_mask"],
-                        return_hidden=True,
+                    interval_smlmt_loss += meta_loss.item()
+                    interval_smlmt_steps += 1
+                    self.fabric.log(
+                        "train/smlmt_loss", meta_loss.item(), step=batch_step
                     )
-                    support_repr = support_hidden.mean(dim=1).bfloat16()
-                    support_preds = fclassifier(support_repr)
-                    support_loss = F.cross_entropy(support_preds, support_labels)
-                    diffopt.step(support_loss)
-
-                    # Evaluate on query set with tracked gradients
-                    _, query_hidden, _ = self.model(
-                        query_inputs["input_ids"],
-                        attention_mask=query_inputs["attention_mask"],
-                        return_hidden=True,
-                    )
-                    query_repr = query_hidden.mean(dim=1).bfloat16()
-                    query_preds = fclassifier(query_repr)
-                    meta_loss = F.cross_entropy(query_preds, query_labels)
-
-                interval_smlmt_loss += meta_loss.item()
-                interval_smlmt_steps += 1
-                self.fabric.log("train/smlmt_loss", meta_loss.item(), step=batch_step)
 
             # --- 3. Gradient Accumulation: Combine Losses and Backward ---
             # Here, we add the losses (if meta_loss is computed) so that gradients flow from both.
@@ -646,19 +666,21 @@ class Trainer:
                 "training"
             ].optimization.gradient_accumulation_steps != 0
 
-            # with self.fabric.no_backward_sync(
-            #     self.model, enabled=should_accumulate_gradients
-            # ):
-            self.fabric.backward(
-                total_loss
-                / self.configs["training"].optimization.gradient_accumulation_steps,
-                model=self.model,
-            )
-            if torch.isnan(total_loss) or torch.isinf(total_loss):
-                interval_inf_or_nan_count += 1
-            else:
-                interval_loss += supervised_loss.item()  # accumulate supervised loss
-                interval_steps += 1
+            with self.fabric.no_backward_sync(
+                self.model, enabled=should_accumulate_gradients
+            ):
+                self.fabric.backward(
+                    total_loss
+                    / self.configs["training"].optimization.gradient_accumulation_steps,
+                    model=self.model,
+                )
+                if torch.isnan(total_loss) or torch.isinf(total_loss):
+                    interval_inf_or_nan_count += 1
+                else:
+                    interval_loss += (
+                        supervised_loss.item()
+                    )  # accumulate supervised loss
+                    interval_steps += 1
 
             # If we're still accumulating gradients, skip the optimizer step.
             if should_accumulate_gradients:
