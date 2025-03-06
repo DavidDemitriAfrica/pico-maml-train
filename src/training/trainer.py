@@ -461,19 +461,30 @@ class Trainer:
     ) -> torch.Tensor:
         """
         Executes the meta-step (inner loop) for the SMLMT branch.
-        Tokenizes the support and query sentences, performs inner loop updates on a temporary
-        copy of the classifier parameters, and returns the meta loss computed on the query set.
+        Splits the meta task across GPUs to reduce per‑GPU memory usage,
+        uses a unified higher inner loop for all inner steps, and applies activation
+        checkpointing to save memory.
         """
-        # Tokenize support and query inputs.
+        # Use the GPU rank to partition the meta task.
+        rank = self.fabric.global_rank
+        world_size = self.fabric.world_size
+
+        # Partition support and query examples so that each GPU processes only a subset.
+        local_support_texts = support_texts[rank::world_size]
+        local_query_texts = query_texts[rank::world_size]
+        local_support_labels = support_labels[rank::world_size]
+        local_query_labels = query_labels[rank::world_size]
+
+        # Tokenize the local support and query sets.
         support_inputs = self.tokenizer(
-            support_texts,
+            local_support_texts,
             return_tensors="pt",
             padding=True,
             truncation=True,
             max_length=self.configs["smlmt"].max_length,
         )
         query_inputs = self.tokenizer(
-            query_texts,
+            local_query_texts,
             return_tensors="pt",
             padding=True,
             truncation=True,
@@ -487,72 +498,62 @@ class Trainer:
         inner_lr = self.configs["smlmt"].inner_lr  # e.g., 1e-3
         inner_steps = self.configs["smlmt"].inner_steps  # e.g., 1 or 5
 
-        # Initialize fast weights with gradient tracking.
-        fast_weights = [
-            p.detach().clone().requires_grad_(True)
-            for p in self.model.classifier_smlmt.parameters()
-        ]
-
-        # Phase 1: Perform inner loop steps with gradient enabled and detach after update for memory efficiency.
-        for _ in range(inner_steps - 1):
-            # Compute support loss with current fast weights.
-            _, support_hidden, _ = self.model(
-                support_inputs["input_ids"],
-                attention_mask=support_inputs["attention_mask"],
-                return_hidden=True,
-            )
-            support_repr = support_hidden.mean(dim=1).bfloat16()
-            if len(fast_weights) == 2:  # Linear with bias.
-                support_preds = F.linear(support_repr, fast_weights[0], fast_weights[1])
-            else:  # Linear without bias.
-                support_preds = F.linear(support_repr, fast_weights[0])
-            support_loss = F.cross_entropy(support_preds, support_labels)
-
-            # Compute gradients with respect to fast_weights.
-            grads = torch.autograd.grad(support_loss, fast_weights, create_graph=False)
-            # Update fast_weights and detach them, re-enabling grad.
-            fast_weights = [
-                (w - inner_lr * g).detach().requires_grad_(True)
-                for w, g in zip(fast_weights, grads)
-            ]
-
-        # Phase 2: Final inner step with gradient tracking using higher innerloop context.
+        # Create an optimizer for the classifier parameters.
         classifier_optimizer = torch.optim.SGD(
             self.model.classifier_smlmt.parameters(), lr=inner_lr
         )
+
+        # Use a single higher inner loop context for all inner steps.
         with higher.innerloop_ctx(
-            self.model.classifier_smlmt,
-            classifier_optimizer,
-            track_higher_grads=True,
+            self.model.classifier_smlmt, classifier_optimizer, track_higher_grads=True
         ) as (fclassifier, diffopt):
-            # Manually override parameters with your fast weights.
-            for param_name, fast_weight in zip(
-                ["weight", "bias"][: len(fast_weights)], fast_weights
-            ):
-                getattr(fclassifier, param_name).data.copy_(fast_weight)
+            # Define a helper function for checkpointing the support forward pass.
+            def support_forward(input_ids, attention_mask):
+                # Forward pass returning hidden states.
+                return self.model(
+                    input_ids,
+                    attention_mask=attention_mask,
+                    return_hidden=True,
+                )
 
-            # Inner step on support set with gradient tracking.
-            _, support_hidden, _ = self.model(
-                support_inputs["input_ids"],
-                attention_mask=support_inputs["attention_mask"],
-                return_hidden=True,
-            )
-            support_repr = support_hidden.mean(dim=1).bfloat16()
-            support_preds = fclassifier(support_repr)
-            support_loss = F.cross_entropy(support_preds, support_labels)
-            diffopt.step(support_loss)
+            # Run the full inner loop.
+            for _ in range(inner_steps):
+                # Use activation checkpointing to reduce memory usage.
+                support_out = torch.utils.checkpoint.checkpoint(
+                    support_forward,
+                    support_inputs["input_ids"],
+                    support_inputs["attention_mask"],
+                )
+                # Unpack output; assuming the model returns a tuple (output, hidden, extra)
+                _, support_hidden, _ = support_out
+                # Compute a representation (e.g. mean pooling) and convert to BF16.
+                support_repr = support_hidden.mean(dim=1).bfloat16()
+                support_preds = fclassifier(support_repr)
+                support_loss = F.cross_entropy(support_preds, local_support_labels)
+                diffopt.step(support_loss)
 
-            # Evaluate on query set.
-            _, query_hidden, _ = self.model(
+            # Similarly, define a helper for the query pass.
+            def query_forward(input_ids, attention_mask):
+                return self.model(
+                    input_ids,
+                    attention_mask=attention_mask,
+                    return_hidden=True,
+                )
+
+            query_out = torch.utils.checkpoint.checkpoint(
+                query_forward,
                 query_inputs["input_ids"],
-                attention_mask=query_inputs["attention_mask"],
-                return_hidden=True,
+                query_inputs["attention_mask"],
             )
+            _, query_hidden, _ = query_out
             query_repr = query_hidden.mean(dim=1).bfloat16()
             query_preds = fclassifier(query_repr)
-            meta_loss = F.cross_entropy(query_preds, query_labels)
+            meta_loss = F.cross_entropy(query_preds, local_query_labels)
 
-        return meta_loss
+        # Aggregate (average) the meta loss across GPUs.
+        meta_loss_tensor = meta_loss.clone()
+        meta_loss_agg = self.fabric.all_reduce(meta_loss_tensor, reduce_op="mean")
+        return meta_loss_agg
 
     def _training_loop(self) -> int:
         """Execute the main training loop.
