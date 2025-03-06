@@ -617,15 +617,11 @@ class Trainer:
             # --- 2. Optional MAML (SMLMT) Meta–Loss ---
             meta_loss = None
             if self.smlmt_enabled and (random.random() < self.smlmt_probability):
-                # Synchronize the decision to run the meta–step across all processes.
                 local_flag = random.random() < self.smlmt_probability
-                # Create the tensor on CPU for proper pickling during broadcast.
-                flag_tensor = torch.tensor([1.0 if local_flag else 0.0], device="cpu")
-                # Broadcast the tensor from rank 0 and then move it to the desired device.
-                flag_tensor = self.fabric.broadcast(flag_tensor, src=0).to(
-                    self.fabric.device
-                )
-                should_compute_meta = bool(flag_tensor.item() > 0.5)
+                flag_value = 1.0 if local_flag else 0.0
+                # Broadcast a list containing the flag_value (a picklable Python float)
+                flag_list = self.fabric.broadcast_object_list([flag_value], src=0)
+                should_compute_meta = bool(flag_list[0] > 0.5)
 
                 if should_compute_meta:
                     self.log("MAML SMLMT branch triggered", level=logging.INFO)
