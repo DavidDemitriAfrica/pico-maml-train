@@ -524,10 +524,13 @@ class Trainer:
             self.model.classifier_smlmt,
             classifier_optimizer,
             track_higher_grads=True,
-            override_params=dict(
-                zip(["weight", "bias"][: len(fast_weights)], fast_weights)
-            ),
         ) as (fclassifier, diffopt):
+            # Manually override parameters with your fast weights.
+            for param_name, fast_weight in zip(
+                ["weight", "bias"][: len(fast_weights)], fast_weights
+            ):
+                getattr(fclassifier, param_name).data.copy_(fast_weight)
+
             # Inner step on support set with gradient tracking.
             _, support_hidden, _ = self.model(
                 support_inputs["input_ids"],
