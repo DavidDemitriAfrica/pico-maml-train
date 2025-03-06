@@ -25,6 +25,7 @@ from torch.utils.data import DataLoader
 from transformers import AutoTokenizer
 from typing import Optional, Dict, Union
 import warnings
+import sys
 
 from src.config import (
     TrainingConfig,
@@ -569,6 +570,23 @@ def initialize_experiment_tracker(
     return experiment_tracker
 
 
+class NoOverwriteStreamHandler(logging.StreamHandler):
+    """
+    Custom stream handler that forces a newline at the end of each log message,
+    preventing in-place updates (i.e. carriage returns) that might overwrite terminal output.
+    """
+
+    def emit(self, record):
+        try:
+            msg = self.format(record)
+            stream = self.stream
+            # Write the message and always end with a newline.
+            stream.write(msg + "\n")
+            self.flush()
+        except Exception:
+            self.handleError(record)
+
+
 def initialize_logging(
     monitoring_config: MonitoringConfig,
     checkpointing_config: CheckpointingConfig,
@@ -581,32 +599,30 @@ def initialize_logging(
     Args:
         monitoring_config: Configuration object containing monitoring settings.
         checkpointing_config: Configuration object containing checkpointing settings.
+        fabric: Lightning Fabric instance for distributed training.
 
     Returns:
         logger: Standard Python logger configured for file and console output
     """
-
-    # ---- Standard Local Logger ---- #
+    # Only rank 0 handles logging.
     if fabric.global_rank != 0:
         return
 
     logger = logging.getLogger(__name__)
     logger.setLevel(logging.INFO)
 
-    # Create file handler
+    # Create file handler.
     log_file_path = _initialize_log_file(checkpointing_config)
     file_handler = logging.FileHandler(log_file_path, encoding="utf-8")
     file_handler.setLevel(monitoring_config.logging.log_level)
 
-    # Create formatter and add it to the handler
+    # Create a formatter.
     formatter = logging.Formatter("%(asctime)s - %(levelname)s - %(message)s")
     file_handler.setFormatter(formatter)
-
-    # Add the handler to the logger
     logger.addHandler(file_handler)
 
-    # Add a stream handler for console output
-    stream_handler = logging.StreamHandler()
+    # Create our custom stream handler to prevent in-place updates.
+    stream_handler = NoOverwriteStreamHandler(sys.stdout)
     stream_handler.setLevel(monitoring_config.logging.log_level)
     stream_handler.setFormatter(formatter)
     logger.addHandler(stream_handler)
