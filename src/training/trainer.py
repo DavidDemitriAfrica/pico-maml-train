@@ -458,13 +458,8 @@ class Trainer:
         query_texts,
         support_labels: torch.Tensor,
         query_labels: torch.Tensor,
+        batch_step: int,  # new parameter to capture the current batch step
     ) -> torch.Tensor:
-        """
-        Executes the meta-step (inner loop) for the SMLMT branch.
-        Splits the meta task across GPUs to reduce per‑GPU memory usage,
-        uses a unified higher inner loop for all inner steps, and applies activation
-        checkpointing to save memory.
-        """
         # Use the GPU rank to partition the meta task.
         rank = self.fabric.global_rank
         world_size = self.fabric.world_size
@@ -507,7 +502,7 @@ class Trainer:
         with higher.innerloop_ctx(
             self.model.classifier_smlmt, classifier_optimizer, track_higher_grads=True
         ) as (fclassifier, diffopt):
-            # Define a helper function for checkpointing the support forward pass.
+            # Helper function for checkpointing the support forward pass.
             def support_forward(input_ids, attention_mask):
                 # Forward pass returning hidden states.
                 return self.model(
@@ -517,7 +512,7 @@ class Trainer:
                 )
 
             # Run the full inner loop.
-            for _ in range(inner_steps):
+            for inner_step in range(inner_steps):
                 # Use activation checkpointing to reduce memory usage.
                 support_out = torch.utils.checkpoint.checkpoint(
                     support_forward,
@@ -530,9 +525,14 @@ class Trainer:
                 support_repr = support_hidden.mean(dim=1).bfloat16()
                 support_preds = fclassifier(support_repr)
                 support_loss = F.cross_entropy(support_preds, local_support_labels)
+                # Log the inner loop loss with a unique step index.
+                global_inner_step = batch_step * inner_steps + inner_step
+                self.fabric.log(
+                    "train/maml_inner_loss", support_loss.item(), step=global_inner_step
+                )
                 diffopt.step(support_loss)
 
-            # Similarly, define a helper for the query pass.
+            # Helper function for the query pass.
             def query_forward(input_ids, attention_mask):
                 return self.model(
                     input_ids,
