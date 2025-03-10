@@ -653,7 +653,11 @@ class Trainer:
                     )
                     try:
                         meta_loss = self._meta_step(
-                            support_texts, query_texts, support_labels, query_labels
+                            support_texts,
+                            query_texts,
+                            support_labels,
+                            query_labels,
+                            batch_step,
                         )
                     except Exception as e:
                         self.log(f"Error in meta–step: {e}", level=logging.ERROR)

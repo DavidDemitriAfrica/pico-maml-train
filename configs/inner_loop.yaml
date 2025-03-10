@@ -16,8 +16,8 @@ checkpointing:
     batch_size: 8
 
 model:
-    d_model: 1536
-    activation_hidden_dim: 6144
+    d_model: 96
+    activation_hidden_dim: 384
 
 evaluation:
   metrics:
