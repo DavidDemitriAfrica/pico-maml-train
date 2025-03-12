@@ -511,7 +511,6 @@ class Trainer:
                     support_forward,
                     support_inputs["input_ids"],
                     support_inputs["attention_mask"],
-                    use_reentrant=False,
                 )
                 # Assuming the model returns (output, hidden, extra)
                 _, support_hidden, _ = support_out
@@ -556,7 +555,6 @@ class Trainer:
                 query_forward,
                 query_inputs["input_ids"],
                 query_inputs["attention_mask"],
-                use_reentrant=False,
             )
             _, query_hidden, _ = query_out
             query_repr = query_hidden.mean(dim=1).bfloat16()
