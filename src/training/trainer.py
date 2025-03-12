@@ -116,10 +116,10 @@ class Trainer:
         # 3. If SMLMT is enabled, instantiate the classifier (so model.state_dict has its keys).
         self.smlmt_enabled = self.configs["smlmt"].enabled
         if self.smlmt_enabled:
-            self.smlmt_probability = self.configs["smlmt"].probability
-            self.smlmt_num_classes = self.configs["smlmt"].num_classes
-            self.smlmt_support = self.configs["smlmt"].support_per_class
-            self.smlmt_query = self.configs["smlmt"].query_per_class
+            self.smlmt_probability = float(self.configs["smlmt"].probability)
+            self.smlmt_num_classes = int(self.configs["smlmt"].num_classes)
+            self.smlmt_support = int(self.configs["smlmt"].support_per_class)
+            self.smlmt_query = int(self.configs["smlmt"].query_per_class)
             self.model.classifier_smlmt = torch.nn.Linear(
                 self.configs["model"].d_model, self.smlmt_num_classes
             )
@@ -490,8 +490,8 @@ class Trainer:
         for key in query_inputs:
             query_inputs[key] = query_inputs[key].to(self.fabric.device)
 
-        inner_lr = self.configs["smlmt"].inner_lr  # e.g., 1e-3
-        inner_steps = self.configs["smlmt"].inner_steps  # e.g., 1 or 5
+        inner_lr = float(self.configs["smlmt"].inner_lr)  # e.g., 1e-3
+        inner_steps = int(self.configs["smlmt"].inner_steps)  # e.g., 1 or 5
 
         # Create an optimizer for the classifier parameters.
         classifier_optimizer = torch.optim.SGD(
