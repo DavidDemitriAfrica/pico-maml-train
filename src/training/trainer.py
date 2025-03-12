@@ -458,18 +458,19 @@ class Trainer:
         query_texts,
         support_labels: torch.Tensor,
         query_labels: torch.Tensor,
-        batch_step: int,
+        batch_step: int,  # new parameter to capture the current batch step
     ) -> torch.Tensor:
+        # Use the GPU rank to partition the meta task.
         rank = self.fabric.global_rank
         world_size = self.fabric.world_size
 
-        # Partition support and query examples among GPUs.
+        # Partition support and query examples so that each GPU processes only a subset.
         local_support_texts = support_texts[rank::world_size]
         local_query_texts = query_texts[rank::world_size]
         local_support_labels = support_labels[rank::world_size]
         local_query_labels = query_labels[rank::world_size]
 
-        # Tokenize inputs.
+        # Tokenize the local support and query sets.
         support_inputs = self.tokenizer(
             local_support_texts,
             return_tensors="pt",
@@ -489,79 +490,92 @@ class Trainer:
         for key in query_inputs:
             query_inputs[key] = query_inputs[key].to(self.fabric.device)
 
-        inner_lr = self.configs["smlmt"].inner_lr
-        inner_steps = self.configs["smlmt"].inner_steps
+        inner_lr = self.configs["smlmt"].inner_lr  # e.g., 1e-3
+        inner_steps = self.configs["smlmt"].inner_steps  # e.g., 1 or 5
 
-        # Create an optimizer for the entire model.
-        inner_optimizer = torch.optim.SGD(self.model.parameters(), lr=inner_lr)
+        # Create an optimizer for the classifier parameters.
+        classifier_optimizer = torch.optim.SGD(
+            self.model.classifier_smlmt.parameters(), lr=inner_lr
+        )
 
+        # Use a single higher inner loop context for all inner steps.
         with higher.innerloop_ctx(
-            self.model, inner_optimizer, track_higher_grads=True
-        ) as (fmodel, diffopt):
-
+            self.model.classifier_smlmt, classifier_optimizer, track_higher_grads=True
+        ) as (fclassifier, diffopt):
+            # Helper function for checkpointing the support forward pass.
             def support_forward(input_ids, attention_mask):
-                return fmodel(
-                    input_ids, attention_mask=attention_mask, return_hidden=True
+                # Forward pass returning hidden states.
+                return self.model(
+                    input_ids,
+                    attention_mask=attention_mask,
+                    return_hidden=True,
                 )
 
+            # Run the full inner loop.
             inner_losses = []
             inner_accuracies = []
             for inner_step in range(inner_steps):
+                # Use activation checkpointing to reduce memory usage.
                 support_out = torch.utils.checkpoint.checkpoint(
                     support_forward,
                     support_inputs["input_ids"],
                     support_inputs["attention_mask"],
+                    use_reentrant=False,
                 )
-                # Assuming the model returns (output, hidden, extra)
+                # Unpack output; assuming the model returns a tuple (output, hidden, extra)
                 _, support_hidden, _ = support_out
+                # Compute a representation (e.g. mean pooling) and convert to BF16.
                 support_repr = support_hidden.mean(dim=1).bfloat16()
-                support_preds = fmodel.classifier_smlmt(support_repr)
+                support_preds = fclassifier(support_repr)
                 support_loss = F.cross_entropy(support_preds, local_support_labels)
+                # Compute inner loop support accuracy.
                 support_pred_labels = support_preds.argmax(dim=1)
                 support_accuracy = (
                     (support_pred_labels == local_support_labels).float().mean()
                 )
-                if self.fabric.global_rank == 0:
-                    self.fabric.log(
-                        "train/maml_inner_loss",
-                        support_loss.item(),
-                        step=(batch_step * inner_steps + inner_step),
-                    )
-                    self.fabric.log(
-                        "train/maml_inner_accuracy",
-                        support_accuracy.item(),
-                        step=(batch_step * inner_steps + inner_step),
-                    )
+                self.fabric.log(
+                    "train/maml_inner_loss",
+                    support_loss.item(),
+                    step=(batch_step * inner_steps + inner_step),
+                )
+                self.fabric.log(
+                    "train/maml_inner_accuracy",
+                    support_accuracy.item(),
+                    step=(batch_step * inner_steps + inner_step),
+                )
                 inner_losses.append(support_loss.item())
                 inner_accuracies.append(support_accuracy.item())
+                # Update the classifier parameters.
                 diffopt.step(support_loss)
-
             avg_inner_loss = sum(inner_losses) / len(inner_losses)
             avg_inner_accuracy = sum(inner_accuracies) / len(inner_accuracies)
-            if self.fabric.global_rank == 0:
-                self.fabric.log(
-                    "train/maml_inner_loss_avg", avg_inner_loss, step=batch_step
-                )
-                self.fabric.log(
-                    "train/maml_inner_accuracy_avg", avg_inner_accuracy, step=batch_step
-                )
+            self.fabric.log(
+                "train/maml_inner_loss_avg", avg_inner_loss, step=batch_step
+            )
+            self.fabric.log(
+                "train/maml_inner_accuracy_avg", avg_inner_accuracy, step=batch_step
+            )
 
+            # Helper function for the query pass.
             def query_forward(input_ids, attention_mask):
-                return fmodel(
-                    input_ids, attention_mask=attention_mask, return_hidden=True
+                return self.model(
+                    input_ids,
+                    attention_mask=attention_mask,
+                    return_hidden=True,
                 )
 
             query_out = torch.utils.checkpoint.checkpoint(
                 query_forward,
                 query_inputs["input_ids"],
                 query_inputs["attention_mask"],
+                use_reentrant=False,
             )
             _, query_hidden, _ = query_out
             query_repr = query_hidden.mean(dim=1).bfloat16()
-            query_preds = fmodel.classifier_smlmt(query_repr)
+            query_preds = fclassifier(query_repr)
             meta_loss = F.cross_entropy(query_preds, local_query_labels)
 
-        # Aggregate the meta loss across GPUs.
+        # Aggregate (average) the meta loss across GPUs.
         meta_loss_tensor = meta_loss.detach().clone()
         meta_loss_agg = self.fabric.all_reduce(meta_loss_tensor, reduce_op="mean")
         return meta_loss_agg
@@ -629,73 +643,39 @@ class Trainer:
             # --- 2. Optional MAML (SMLMT) Meta–Loss ---
             meta_loss = None
             if self.smlmt_enabled:
-                # Only rank 0 makes the decision based on the probability.
+                # Only rank 0 decides whether to trigger the meta branch.
                 if self.fabric.global_rank == 0:
-                    trigger_value = (
+                    flag_value = (
                         1.0 if random.random() < self.smlmt_probability else 0.0
                     )
                 else:
-                    trigger_value = 0.0  # placeholder on non-rank0 ranks.
-                trigger_tensor = torch.tensor(trigger_value, device=self.fabric.device)
-                trigger_tensor = self.fabric.broadcast(trigger_tensor, src=0)
-                if trigger_tensor.item() > 0.5:
-                    # Log the trigger only once from rank 0.
-                    if self.fabric.global_rank == 0:
-                        self.log("MAML SMLMT branch triggered", level=logging.INFO)
-                    # Generate the meta task.
-                    if self.fabric.global_rank == 0:
-                        task_generator = SMLMTTask(
-                            self.smlmt_sentences,
-                            self.smlmt_vocabulary,
-                            num_classes=self.smlmt_num_classes,
-                            support_per_class=self.smlmt_support,
-                            query_per_class=self.smlmt_query,
-                            mask_token=self.tokenizer.mask_token
-                            if hasattr(self.tokenizer, "mask_token")
-                            else "[MASK]",
-                        )
-                        support_set, query_set = task_generator.generate_task()
-                        support_texts = [sent for (sent, _) in support_set]
-                        query_texts = [sent for (sent, _) in query_set]
-                        support_labels = torch.tensor(
-                            [label for (_, label) in support_set],
-                            device=self.fabric.device,
-                        )
-                        query_labels = torch.tensor(
-                            [label for (_, label) in query_set],
-                            device=self.fabric.device,
-                        )
-                    else:
-                        # For non-rank0, we assume the task can be deterministically generated.
-                        support_texts, query_texts = None, None
-                        support_labels, query_labels = None, None
+                    flag_value = 0.0  # Placeholder for non-rank0 processes.
+                flag_tensor = torch.tensor(flag_value, device=self.fabric.device)
+                flag_tensor = self.fabric.broadcast(flag_tensor, src=0)
+                should_compute_meta = bool(flag_tensor.item() > 0.5)
+                if should_compute_meta:
+                    self.log("MAML SMLMT branch triggered", level=logging.INFO)
 
-                    # Synchronize all processes.
-                    self.fabric.barrier()
-
-                    # If non-rank0, re-generate the same meta task deterministically.
-                    if support_texts is None:
-                        task_generator = SMLMTTask(
-                            self.smlmt_sentences,
-                            self.smlmt_vocabulary,
-                            num_classes=self.smlmt_num_classes,
-                            support_per_class=self.smlmt_support,
-                            query_per_class=self.smlmt_query,
-                            mask_token=self.tokenizer.mask_token
-                            if hasattr(self.tokenizer, "mask_token")
-                            else "[MASK]",
-                        )
-                        support_set, query_set = task_generator.generate_task()
-                        support_texts = [sent for (sent, _) in support_set]
-                        query_texts = [sent for (sent, _) in query_set]
-                        support_labels = torch.tensor(
-                            [label for (_, label) in support_set],
-                            device=self.fabric.device,
-                        )
-                        query_labels = torch.tensor(
-                            [label for (_, label) in query_set],
-                            device=self.fabric.device,
-                        )
+                    # Generate one SMLMT task (episode)
+                    task_generator = SMLMTTask(
+                        self.smlmt_sentences,
+                        self.smlmt_vocabulary,
+                        num_classes=self.smlmt_num_classes,
+                        support_per_class=self.smlmt_support,
+                        query_per_class=self.smlmt_query,
+                        mask_token=self.tokenizer.mask_token
+                        if hasattr(self.tokenizer, "mask_token")
+                        else "[MASK]",
+                    )
+                    support_set, query_set = task_generator.generate_task()
+                    support_texts = [sent for (sent, _) in support_set]
+                    query_texts = [sent for (sent, _) in query_set]
+                    support_labels = torch.tensor(
+                        [label for (_, label) in support_set], device=self.fabric.device
+                    )
+                    query_labels = torch.tensor(
+                        [label for (_, label) in query_set], device=self.fabric.device
+                    )
                     try:
                         meta_loss = self._meta_step(
                             support_texts,
@@ -705,11 +685,14 @@ class Trainer:
                             batch_step,
                         )
                     except Exception as e:
-                        if self.fabric.global_rank == 0:
-                            self.log(f"Error in meta–step: {e}", level=logging.ERROR)
+                        self.log(f"Error in meta–step: {e}", level=logging.ERROR)
                         meta_loss = torch.tensor(0.0, device=self.fabric.device)
+
                     interval_smlmt_loss += meta_loss.item()
                     interval_smlmt_steps += 1
+                    self.fabric.log(
+                        "train/smlmt_loss", meta_loss.item(), step=batch_step
+                    )
 
             # --- 3. Gradient Accumulation: Combine Losses and Backward ---
             # Here, we add the losses (if meta_loss is computed) so that gradients flow from both.
