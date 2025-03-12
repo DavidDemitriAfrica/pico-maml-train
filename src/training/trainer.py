@@ -512,6 +512,8 @@ class Trainer:
                 )
 
             # Run the full inner loop.
+            inner_losses = []
+            inner_accuracies = []
             for inner_step in range(inner_steps):
                 # Use activation checkpointing to reduce memory usage.
                 support_out = torch.utils.checkpoint.checkpoint(
@@ -532,15 +534,27 @@ class Trainer:
                     (support_pred_labels == local_support_labels).float().mean()
                 )
                 self.fabric.log(
-                    "train/maml_inner_loss", support_loss.item(), step=batch_step
+                    "train/maml_inner_loss",
+                    support_loss.item(),
+                    step=(batch_step * inner_steps + inner_step),
                 )
                 self.fabric.log(
                     "train/maml_inner_accuracy",
                     support_accuracy.item(),
-                    step=batch_step,
+                    step=(batch_step * inner_steps + inner_step),
                 )
+                inner_losses.append(support_loss.item())
+                inner_accuracies.append(support_accuracy.item())
                 # Update the classifier parameters.
                 diffopt.step(support_loss)
+            avg_inner_loss = sum(inner_losses) / len(inner_losses)
+            avg_inner_accuracy = sum(inner_accuracies) / len(inner_accuracies)
+            self.fabric.log(
+                "train/maml_inner_loss_avg", avg_inner_loss, step=batch_step
+            )
+            self.fabric.log(
+                "train/maml_inner_accuracy_avg", avg_inner_accuracy, step=batch_step
+            )
 
             # Helper function for the query pass.
             def query_forward(input_ids, attention_mask):
@@ -562,7 +576,7 @@ class Trainer:
             meta_loss = F.cross_entropy(query_preds, local_query_labels)
 
         # Aggregate (average) the meta loss across GPUs.
-        meta_loss_tensor = meta_loss.clone()
+        meta_loss_tensor = meta_loss.detach().clone()
         meta_loss_agg = self.fabric.all_reduce(meta_loss_tensor, reduce_op="mean")
         return meta_loss_agg
 
