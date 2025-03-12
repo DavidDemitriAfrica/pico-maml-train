@@ -39,11 +39,11 @@ training:
     lr: 0.001
     lr_warmup_steps: 30
 
-    gradient_accumulation_steps: 4
+    gradient_accumulation_steps: 1
   
   fabric:
     num_nodes: 1
-    num_devices: 4
+    num_devices: 1
 
 smlmt:
   enabled: true
