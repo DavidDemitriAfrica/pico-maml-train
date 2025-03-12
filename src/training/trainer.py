@@ -518,18 +518,28 @@ class Trainer:
                     support_forward,
                     support_inputs["input_ids"],
                     support_inputs["attention_mask"],
+                    use_reentrant=False,
                 )
                 # Unpack output; assuming the model returns a tuple (output, hidden, extra)
                 _, support_hidden, _ = support_out
-                # Compute a representation (e.g. mean pooling) and convert to BF16.
-                support_repr = support_hidden.mean(dim=1).bfloat16()
+                # Compute a representation (e.g. mean pooling)
+                support_repr = support_hidden.mean(dim=1)
                 support_preds = fclassifier(support_repr)
                 support_loss = F.cross_entropy(support_preds, local_support_labels)
-                # Log the inner loop loss with a unique step index.
-                global_inner_step = batch_step * inner_steps + inner_step
-                self.fabric.log(
-                    "train/maml_inner_loss", support_loss.item(), step=global_inner_step
+                # Compute inner loop support accuracy.
+                support_pred_labels = support_preds.argmax(dim=1)
+                support_accuracy = (
+                    (support_pred_labels == local_support_labels).float().mean()
                 )
+                self.fabric.log(
+                    "train/maml_inner_loss", support_loss.item(), step=batch_step
+                )
+                self.fabric.log(
+                    "train/maml_inner_accuracy",
+                    support_accuracy.item(),
+                    step=batch_step,
+                )
+                # Update the classifier parameters.
                 diffopt.step(support_loss)
 
             # Helper function for the query pass.
@@ -544,9 +554,10 @@ class Trainer:
                 query_forward,
                 query_inputs["input_ids"],
                 query_inputs["attention_mask"],
+                use_reentrant=False,
             )
             _, query_hidden, _ = query_out
-            query_repr = query_hidden.mean(dim=1).bfloat16()
+            query_repr = query_hidden.mean(dim=1)
             query_preds = fclassifier(query_repr)
             meta_loss = F.cross_entropy(query_preds, local_query_labels)
 
