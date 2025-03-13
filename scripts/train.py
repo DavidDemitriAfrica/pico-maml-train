@@ -8,6 +8,9 @@ import click
 from pathlib import Path
 from src.training.trainer import Trainer
 import torch
+import sys
+
+sys.setrecursionlimit(10000)
 
 
 @click.command()

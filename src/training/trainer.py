@@ -498,7 +498,7 @@ class Trainer:
 
         # Use a single higher inner loop context for all inner steps.
         with higher.innerloop_ctx(
-            self.model, inner_optimizer, track_higher_grads=True
+            self.model, inner_optimizer, track_higher_grads=False
         ) as (fmodel, diffopt):
             # Helper function for checkpointing the support forward pass.
             def support_forward(input_ids, attention_mask):
