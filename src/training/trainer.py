@@ -464,19 +464,16 @@ class Trainer:
         query_texts,
         support_labels: torch.Tensor,
         query_labels: torch.Tensor,
-        batch_step: int,  # new parameter to capture the current batch step
+        batch_step: int,
     ) -> torch.Tensor:
-        # Use the GPU rank to partition the meta task.
         rank = self.fabric.global_rank
         world_size = self.fabric.world_size
 
-        # Partition support and query examples so that each GPU processes only a subset.
         local_support_texts = support_texts[rank::world_size]
         local_query_texts = query_texts[rank::world_size]
         local_support_labels = support_labels[rank::world_size]
         local_query_labels = query_labels[rank::world_size]
 
-        # Tokenize the local support and query sets.
         support_inputs = self.tokenizer(
             local_support_texts,
             return_tensors="pt",
@@ -496,30 +493,27 @@ class Trainer:
         for key in query_inputs:
             query_inputs[key] = query_inputs[key].to(self.fabric.device)
 
-        inner_lr = float(self.configs["smlmt"].inner_lr)  # e.g., 1e-3
-        inner_steps = int(self.configs["smlmt"].inner_steps)  # e.g., 1 or 5
+        inner_lr = float(self.configs["smlmt"].inner_lr)
+        inner_steps = int(self.configs["smlmt"].inner_steps)
 
-        # Create an optimizer for the classifier parameters.
         classifier_optimizer = torch.optim.SGD(
             self.model.classifier_smlmt.parameters(), lr=inner_lr
         )
 
-        # Use a single higher inner loop context for all inner steps.
         with higher.innerloop_ctx(
             self.model.classifier_smlmt, classifier_optimizer, track_higher_grads=True
         ) as (fclassifier, diffopt):
-            # Helper function for checkpointing the support forward pass.
+            # Define a helper function for the support forward pass.
             def support_forward(input_ids, attention_mask):
-                # Forward pass returning hidden states.
                 return self.model(
                     input_ids,
                     attention_mask=attention_mask,
                     return_hidden=True,
                 )
 
-            # Run the full inner loop.
             inner_losses = []
             inner_accuracies = []
+            # --- Inner loop: update classifier parameters on the support set ---
             for inner_step in range(inner_steps):
                 # Use activation checkpointing to reduce memory usage.
                 support_out = torch.utils.checkpoint.checkpoint(
@@ -528,13 +522,11 @@ class Trainer:
                     support_inputs["attention_mask"],
                     use_reentrant=False,
                 )
-                # Unpack output; assuming the model returns a tuple (output, hidden, extra)
+                # Unpack output: assuming the model returns (output, hidden, extra)
                 _, support_hidden, _ = support_out
-                # Compute a representation (e.g. mean pooling) and convert to BF16.
                 support_repr = support_hidden.mean(dim=1).bfloat16()
                 support_preds = fclassifier(support_repr)
                 support_loss = F.cross_entropy(support_preds, local_support_labels)
-                # Compute inner loop support accuracy.
                 support_pred_labels = support_preds.argmax(dim=1)
                 support_accuracy = (
                     (support_pred_labels == local_support_labels).float().mean()
@@ -551,14 +543,14 @@ class Trainer:
                 )
                 inner_losses.append(support_loss.item())
                 inner_accuracies.append(support_accuracy.item())
-                # Update the classifier parameters.
+                # Update the classifier parameters in the inner loop.
                 diffopt.step(support_loss)
             avg_inner_accuracy = sum(inner_accuracies) / len(inner_accuracies)
             self.fabric.log(
                 "train/maml_inner_accuracy_avg", avg_inner_accuracy, step=batch_step
             )
 
-            # Helper function for the query pass.
+            # --- Query pass: compute meta loss using the updated classifier ---
             def query_forward(input_ids, attention_mask):
                 return self.model(
                     input_ids,
@@ -577,7 +569,7 @@ class Trainer:
             query_preds = fclassifier(query_repr)
             meta_loss = F.cross_entropy(query_preds, local_query_labels)
 
-        # Aggregate (average) the meta loss across GPUs.
+        # Aggregate the meta loss across GPUs.
         meta_loss_tensor = meta_loss.detach().clone()
         meta_loss_agg = self.fabric.all_reduce(meta_loss_tensor, reduce_op="mean")
         return meta_loss_agg

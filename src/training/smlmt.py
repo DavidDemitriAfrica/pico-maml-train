@@ -32,7 +32,6 @@ class ClassifierMLP(nn.Module):
 class SMLMTTask:
     """
     Class for generating a Self-supervised Meta-learning Task (SMLMT).
-
     Each task is built from a subset of vocabulary words. For each selected word,
     it samples support and query sentences from those sentences that contain the word,
     then masks the target word with a mask token.
@@ -47,15 +46,6 @@ class SMLMTTask:
         query_per_class,
         mask_token="[MASK]",
     ):
-        """
-        Args:
-            sentences (List[str]): A list of unsupervised sentences.
-            vocabulary (List[str]): A list of vocabulary words to choose from.
-            num_classes (int): Number of unique words (classes) to select (K).
-            support_per_class (int): Number of support examples per class (S).
-            query_per_class (int): Number of query examples per class (Q).
-            mask_token (str): The token to use to mask the target word.
-        """
         self.sentences = sentences
         self.vocabulary = vocabulary
         self.num_classes = num_classes
@@ -66,14 +56,12 @@ class SMLMTTask:
     def generate_task(self):
         """
         Generate a single SMLMT task.
-
         Returns:
             support_set (List[Tuple[str, int]]): List of (masked_sentence, label) for the support set.
             query_set (List[Tuple[str, int]]): List of (masked_sentence, label) for the query set.
         """
         # (1) Randomly select num_classes unique words from the vocabulary.
         selected_words = random.sample(self.vocabulary, self.num_classes)
-
         support_set = []
         query_set = []
 
@@ -83,12 +71,15 @@ class SMLMTTask:
             matching_sentences = [
                 s for s in self.sentences if self._contains_word(s, word)
             ]
-
-            # In case there are not enough sentences, you might fall back to all sentences.
+            # Check if there are enough sentences containing the target word.
             if len(matching_sentences) < self.support_per_class + self.query_per_class:
+                print(
+                    f"Warning: Not enough sentences found containing the word '{word}'. Using fallback."
+                )
+                # Fallback: use all non-None sentences.
                 matching_sentences = [s for s in self.sentences if s is not None]
 
-            # Randomly sample S + Q sentences
+            # Randomly sample S + Q sentences.
             sampled = random.sample(
                 matching_sentences, self.support_per_class + self.query_per_class
             )
@@ -106,22 +97,13 @@ class SMLMTTask:
         return support_set, query_set
 
     def _mask_word(self, sentence, target_word):
-        """
-        Replace all full-word occurrences of target_word in sentence with the mask token.
-        If the sentence is None, returns an empty string.
-        """
         if sentence is None:
             return ""
-        # Use a default mask token if self.mask_token is None.
         replacement = self.mask_token if self.mask_token is not None else "[MASK]"
         pattern = r"\b" + re.escape(target_word) + r"\b"
         return re.sub(pattern, replacement, sentence)
 
     def _contains_word(self, sentence, target_word):
-        """
-        Returns True if the target_word occurs as a full word in the sentence.
-        If the sentence is None, returns False.
-        """
         if sentence is None:
             return False
         pattern = r"\b" + re.escape(target_word) + r"\b"
