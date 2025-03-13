@@ -2,6 +2,7 @@ import re
 import random
 from torch.utils.data import Dataset
 import torch.nn as nn
+from collections import defaultdict
 
 
 class ClassifierMLP(nn.Module):
@@ -34,8 +35,8 @@ class SMLMTTask:
     Class for generating a Self-supervised Meta-learning Task (SMLMT).
 
     Each task is built from a subset of vocabulary words. For each selected word,
-    it samples support and query sentences from those sentences that contain the word,
-    then masks the target word with a mask token.
+    it samples support and query sentences (with the target word masked) from the sentences
+    that contain that word.
     """
 
     def __init__(
@@ -63,26 +64,36 @@ class SMLMTTask:
         self.query_per_class = query_per_class
         self.mask_token = mask_token
 
-        # Precompute the minimum required sentence count per word.
+        # Minimum required sentences for each word.
         self.min_required = self.support_per_class + self.query_per_class
 
-        # Pre-filter the vocabulary to only include words that appear enough times.
+        # Build an index mapping each vocabulary word to the list of sentences that contain it.
+        # We assume that the sentences are already tokenized or use whitespace to separate tokens.
+        # This is much faster than scanning all sentences repeatedly.
+        self.word_to_sentences = defaultdict(list)
+        vocab_set = set(self.vocabulary)
+        for s in self.sentences:
+            if s is None:
+                continue
+            # Use split() for speed. Adjust if you need a different tokenization.
+            tokens = set(s.split())
+            # For each token in the sentence that is in our vocabulary, record the sentence.
+            for token in tokens:
+                if token in vocab_set:
+                    self.word_to_sentences[token].append(s)
+
+        # Filter the vocabulary to those words that appear in at least min_required sentences.
         self.valid_vocabulary = [
             word
             for word in self.vocabulary
-            if self._count_occurrences(word) >= self.min_required
+            if len(self.word_to_sentences[word]) >= self.min_required
         ]
         if len(self.valid_vocabulary) < self.num_classes:
             print(
-                f"Warning: Only {len(self.valid_vocabulary)} words have at least {self.min_required} matching sentences. "
-                "Tasks will be generated using these words."
+                f"Warning: Only {len(self.valid_vocabulary)} words have at least {self.min_required} occurrences. "
+                "Falling back to full vocabulary."
             )
-            # If not enough words pass the filter, fall back to full vocabulary.
             self.valid_vocabulary = self.vocabulary
-
-    def _count_occurrences(self, target_word):
-        """Counts how many sentences contain the target word (as a full token)."""
-        return sum(1 for s in self.sentences if self._contains_word(s, target_word))
 
     def generate_task(self):
         """
@@ -92,34 +103,29 @@ class SMLMTTask:
             support_set (List[Tuple[str, int]]): List of (masked_sentence, label) for the support set.
             query_set (List[Tuple[str, int]]): List of (masked_sentence, label) for the query set.
         """
-        # Resample until we have the required number of words with sufficient support.
+        # Sample target words from the filtered vocabulary.
         selected_words = random.sample(self.valid_vocabulary, self.num_classes)
-
         support_set = []
         query_set = []
 
         for label, word in enumerate(selected_words):
-            # Find all sentences that contain the target word.
-            matching_sentences = [
-                s for s in self.sentences if self._contains_word(s, word)
-            ]
+            matching_sentences = self.word_to_sentences[word]
             if len(matching_sentences) < self.min_required:
-                # If this happens (should be rare thanks to filtering), print a warning and skip this word.
+                # This should rarely happen, but if it does, warn and skip this word.
                 print(
                     f"Warning: Even after filtering, not enough sentences for word '{word}'. Skipping this word."
                 )
                 continue
 
-            # Randomly sample S + Q sentences.
+            # Randomly sample exactly the number of required sentences.
             sampled = random.sample(matching_sentences, self.min_required)
             support_sentences = sampled[: self.support_per_class]
             query_sentences = sampled[self.support_per_class :]
 
-            # Mask the target word in all sampled sentences.
+            # Mask the target word in each sampled sentence.
             support_masked = [self._mask_word(s, word) for s in support_sentences]
             query_masked = [self._mask_word(s, word) for s in query_sentences]
 
-            # Extend the task sets with (masked sentence, label) pairs.
             support_set.extend([(sent, label) for sent in support_masked])
             query_set.extend([(sent, label) for sent in query_masked])
 
@@ -128,7 +134,6 @@ class SMLMTTask:
     def _mask_word(self, sentence, target_word):
         """
         Replace all full-word occurrences of target_word in sentence with the mask token.
-        If the sentence is None, returns an empty string.
         """
         if sentence is None:
             return ""
@@ -139,7 +144,6 @@ class SMLMTTask:
     def _contains_word(self, sentence, target_word):
         """
         Returns True if the target_word occurs as a full word in the sentence.
-        If the sentence is None, returns False.
         """
         if sentence is None:
             return False

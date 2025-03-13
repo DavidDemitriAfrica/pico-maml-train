@@ -244,10 +244,10 @@ class Trainer:
                                 samples_collected += 1
 
             if not self.configs["smlmt"].vocabulary:
-                # For example, sample 10000 words from the tokenizer's vocabulary.
+                # For example, sample 1000 words from the tokenizer's vocabulary.
                 full_vocab = list(self.tokenizer.get_vocab().keys())
                 self.smlmt_vocabulary = random.sample(
-                    full_vocab, min(10000, len(full_vocab))
+                    full_vocab, min(1000, len(full_vocab))
                 )
             else:
                 self.smlmt_vocabulary = self.configs["smlmt"].vocabulary
