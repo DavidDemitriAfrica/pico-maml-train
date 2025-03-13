@@ -13,7 +13,7 @@ class SMLMTConfig:
     sentences: List[str] = field(default_factory=list)
     vocabulary: List[str] = field(default_factory=list)
     inner_lr: float = 0.001
-    inner_steps: int = 1
+    inner_steps: int = 10
     max_length: int = 1024
-    hidden_dims: List[int] = field(default_factory=lambda: [1024, 1024, 1024, 1024])
+    hidden_dims: List[int] = field(default_factory=lambda: [384, 384])
     dropout: float = 0
