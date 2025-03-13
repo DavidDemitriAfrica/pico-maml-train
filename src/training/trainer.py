@@ -24,7 +24,7 @@ from datasets import Dataset, load_dataset
 from typing import Dict, Any
 
 from src.model import Pico
-from .smlmt import SMLMTTask
+from .smlmt import SMLMTTask, ClassifierMLP
 from src.training.utils import (
     initialize_run_dir,
     initialize_fabric,
@@ -120,8 +120,14 @@ class Trainer:
             self.smlmt_num_classes = int(self.configs["smlmt"].num_classes)
             self.smlmt_support = int(self.configs["smlmt"].support_per_class)
             self.smlmt_query = int(self.configs["smlmt"].query_per_class)
-            self.model.classifier_smlmt = torch.nn.Linear(
-                self.configs["model"].d_model, self.smlmt_num_classes
+            # Read hidden dimensions and dropout from config, with defaults if not provided.
+            hidden_dims = self.configs["smlmt"].get("hidden_dims", [2048, 1024])
+            dropout = self.configs["smlmt"].get("dropout", 0.1)
+            self.model.classifier_smlmt = ClassifierMLP(
+                input_dim=self.configs["model"].d_model,
+                hidden_dims=hidden_dims,
+                num_classes=self.smlmt_num_classes,
+                dropout=dropout,
             )
             if self.fabric._precision == "bf16-mixed":  # check BF16
                 dtype = torch.bfloat16

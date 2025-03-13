@@ -1,6 +1,32 @@
 import re
 import random
 from torch.utils.data import Dataset
+import torch.nn as nn
+
+
+class ClassifierMLP(nn.Module):
+    def __init__(self, input_dim, hidden_dims, num_classes, dropout=0.1):
+        """
+        Args:
+            input_dim (int): Size of the input features.
+            hidden_dims (List[int]): A list where each element specifies the number of units
+                                     in that hidden layer.
+            num_classes (int): Number of output classes.
+            dropout (float): Dropout rate applied after each hidden layer.
+        """
+        super(ClassifierMLP, self).__init__()
+        layers = []
+        in_dim = input_dim
+        for h_dim in hidden_dims:
+            layers.append(nn.Linear(in_dim, h_dim))
+            layers.append(nn.ReLU())
+            layers.append(nn.Dropout(dropout))
+            in_dim = h_dim
+        layers.append(nn.Linear(in_dim, num_classes))
+        self.model = nn.Sequential(*layers)
+
+    def forward(self, x):
+        return self.model(x)
 
 
 class SMLMTTask:
