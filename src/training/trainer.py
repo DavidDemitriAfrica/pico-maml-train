@@ -498,12 +498,12 @@ class Trainer:
 
         # Use a single higher inner loop context for all inner steps.
         with higher.innerloop_ctx(
-            self.model.classifier_smlmt, inner_optimizer, track_higher_grads=True
-        ) as (fclassifier, diffopt):
+            self.model, inner_optimizer, track_higher_grads=True
+        ) as (fmodel, diffopt):
             # Helper function for checkpointing the support forward pass.
             def support_forward(input_ids, attention_mask):
                 # Forward pass returning hidden states.
-                return self.model(
+                return fmodel(
                     input_ids,
                     attention_mask=attention_mask,
                     return_hidden=True,
@@ -524,7 +524,7 @@ class Trainer:
                 _, support_hidden, _ = support_out
                 # Compute a representation (e.g. mean pooling) and convert to BF16.
                 support_repr = support_hidden.mean(dim=1).bfloat16()
-                support_preds = fclassifier(support_repr)
+                support_preds = fmodel.classifier_smlmt(support_repr)
                 support_loss = F.cross_entropy(support_preds, local_support_labels)
                 # Compute inner loop support accuracy.
                 support_pred_labels = support_preds.argmax(dim=1)
@@ -556,7 +556,7 @@ class Trainer:
 
             # Helper function for the query pass.
             def query_forward(input_ids, attention_mask):
-                return self.model(
+                return fmodel(
                     input_ids,
                     attention_mask=attention_mask,
                     return_hidden=True,
@@ -570,7 +570,7 @@ class Trainer:
             )
             _, query_hidden, _ = query_out
             query_repr = query_hidden.mean(dim=1).bfloat16()
-            query_preds = fclassifier(query_repr)
+            query_preds = fmodel.classifier_smlmt(query_repr)
             meta_loss = F.cross_entropy(query_preds, local_query_labels)
 
         # Aggregate (average) the meta loss across GPUs.
