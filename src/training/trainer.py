@@ -553,11 +553,7 @@ class Trainer:
                 inner_accuracies.append(support_accuracy.item())
                 # Update the classifier parameters.
                 diffopt.step(support_loss)
-            avg_inner_loss = sum(inner_losses) / len(inner_losses)
             avg_inner_accuracy = sum(inner_accuracies) / len(inner_accuracies)
-            self.fabric.log(
-                "train/maml_inner_loss_avg", avg_inner_loss, step=batch_step
-            )
             self.fabric.log(
                 "train/maml_inner_accuracy_avg", avg_inner_accuracy, step=batch_step
             )

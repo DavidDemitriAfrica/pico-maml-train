@@ -15,5 +15,5 @@ class SMLMTConfig:
     inner_lr: float = 0.001
     inner_steps: int = 1
     max_length: int = 1024
-    hidden_dims: List[int] = field(default_factory=lambda: [2048, 1024])
-    dropout: float = 0.1
+    hidden_dims: List[int] = field(default_factory=lambda: [1024, 1024, 1024, 1024])
+    dropout: float = 0
