@@ -513,12 +513,9 @@ class Trainer:
             inner_losses = []
             inner_accuracies = []
             for inner_step in range(inner_steps):
-                # Use activation checkpointing to reduce memory usage.
-                support_out = torch.utils.checkpoint.checkpoint(
-                    support_forward,
+                support_out = support_forward(
                     support_inputs["input_ids"],
                     support_inputs["attention_mask"],
-                    use_reentrant=True,
                 )
                 # Unpack output; assuming the model returns a tuple (output, hidden, extra)
                 _, support_hidden, _ = support_out
@@ -562,11 +559,9 @@ class Trainer:
                     return_hidden=True,
                 )
 
-            query_out = torch.utils.checkpoint.checkpoint(
-                query_forward,
+            query_out = query_forward(
                 query_inputs["input_ids"],
                 query_inputs["attention_mask"],
-                use_reentrant=True,
             )
             _, query_hidden, _ = query_out
             query_repr = query_hidden.mean(dim=1).bfloat16()
