@@ -494,16 +494,18 @@ class Trainer:
         inner_steps = int(self.configs["smlmt"].inner_steps)  # e.g., 1 or 5
 
         # Create an optimizer for the classifier parameters.
-        inner_optimizer = torch.optim.SGD(self.model.parameters(), lr=inner_lr)
+        classifier_optimizer = torch.optim.SGD(
+            self.model.classifier_smlmt.parameters(), lr=inner_lr
+        )
 
         # Use a single higher inner loop context for all inner steps.
         with higher.innerloop_ctx(
-            self.model, inner_optimizer, track_higher_grads=False
-        ) as (fmodel, diffopt):
+            self.model.classifier_smlmt, classifier_optimizer, track_higher_grads=True
+        ) as (fclassifier, diffopt):
             # Helper function for checkpointing the support forward pass.
             def support_forward(input_ids, attention_mask):
                 # Forward pass returning hidden states.
-                return fmodel(
+                return self.model(
                     input_ids,
                     attention_mask=attention_mask,
                     return_hidden=True,
@@ -513,15 +515,18 @@ class Trainer:
             inner_losses = []
             inner_accuracies = []
             for inner_step in range(inner_steps):
-                support_out = support_forward(
+                # Use activation checkpointing to reduce memory usage.
+                support_out = torch.utils.checkpoint.checkpoint(
+                    support_forward,
                     support_inputs["input_ids"],
                     support_inputs["attention_mask"],
+                    use_reentrant=False,
                 )
                 # Unpack output; assuming the model returns a tuple (output, hidden, extra)
                 _, support_hidden, _ = support_out
                 # Compute a representation (e.g. mean pooling) and convert to BF16.
                 support_repr = support_hidden.mean(dim=1).bfloat16()
-                support_preds = fmodel.classifier_smlmt(support_repr)
+                support_preds = fclassifier(support_repr)
                 support_loss = F.cross_entropy(support_preds, local_support_labels)
                 # Compute inner loop support accuracy.
                 support_pred_labels = support_preds.argmax(dim=1)
@@ -553,19 +558,21 @@ class Trainer:
 
             # Helper function for the query pass.
             def query_forward(input_ids, attention_mask):
-                return fmodel(
+                return self.model(
                     input_ids,
                     attention_mask=attention_mask,
                     return_hidden=True,
                 )
 
-            query_out = query_forward(
+            query_out = torch.utils.checkpoint.checkpoint(
+                query_forward,
                 query_inputs["input_ids"],
                 query_inputs["attention_mask"],
+                use_reentrant=False,
             )
             _, query_hidden, _ = query_out
             query_repr = query_hidden.mean(dim=1).bfloat16()
-            query_preds = fmodel.classifier_smlmt(query_repr)
+            query_preds = fclassifier(query_repr)
             meta_loss = F.cross_entropy(query_preds, local_query_labels)
 
         # Aggregate (average) the meta loss across GPUs.
