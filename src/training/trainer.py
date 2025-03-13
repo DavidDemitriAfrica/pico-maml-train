@@ -121,13 +121,13 @@ class Trainer:
             self.smlmt_support = int(self.configs["smlmt"].support_per_class)
             self.smlmt_query = int(self.configs["smlmt"].query_per_class)
             # Read hidden dimensions and dropout from config, with defaults if not provided.
-            hidden_dims = self.configs["smlmt"].get("hidden_dims", [2048, 1024])
-            dropout = self.configs["smlmt"].get("dropout", 0.1)
+            self.hidden_dims = self.configs["smlmt"].hidden_dims
+            self.dropout = self.configs["smlmt"].dropout
             self.model.classifier_smlmt = ClassifierMLP(
                 input_dim=self.configs["model"].d_model,
-                hidden_dims=hidden_dims,
+                hidden_dims=self.hidden_dims,
                 num_classes=self.smlmt_num_classes,
-                dropout=dropout,
+                dropout=self.dropout,
             )
             if self.fabric._precision == "bf16-mixed":  # check BF16
                 dtype = torch.bfloat16
