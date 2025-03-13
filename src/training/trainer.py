@@ -496,7 +496,7 @@ class Trainer:
         inner_lr = float(self.configs["smlmt"].inner_lr)
         inner_steps = int(self.configs["smlmt"].inner_steps)
 
-        classifier_optimizer = torch.optim.SGD(
+        classifier_optimizer = torch.optim.AdamW(
             self.model.classifier_smlmt.parameters(), lr=inner_lr
         )
 
@@ -570,8 +570,7 @@ class Trainer:
             meta_loss = F.cross_entropy(query_preds, local_query_labels)
 
         # Aggregate the meta loss across GPUs.
-        meta_loss_tensor = meta_loss.detach().clone()
-        meta_loss_agg = self.fabric.all_reduce(meta_loss_tensor, reduce_op="mean")
+        meta_loss_agg = self.fabric.all_reduce(meta_loss, reduce_op="mean")
         return meta_loss_agg
 
     def _training_loop(self) -> int:
