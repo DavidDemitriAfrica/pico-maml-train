@@ -525,7 +525,7 @@ class Trainer:
                 # Unpack output; assuming the model returns a tuple (output, hidden, extra)
                 _, support_hidden, _ = support_out
                 # Compute a representation (e.g. mean pooling) and convert to BF16.
-                support_repr = support_hidden.mean(dim=1)
+                support_repr = support_hidden.mean(dim=1).bfloat16()
                 support_preds = fclassifier(support_repr)
                 support_loss = F.cross_entropy(support_preds, local_support_labels)
                 # Compute inner loop support accuracy.
@@ -571,7 +571,7 @@ class Trainer:
                 use_reentrant=False,
             )
             _, query_hidden, _ = query_out
-            query_repr = query_hidden.mean(dim=1)
+            query_repr = query_hidden.mean(dim=1).bfloat16()
             query_preds = fclassifier(query_repr)
             meta_loss = F.cross_entropy(query_preds, local_query_labels)
 
