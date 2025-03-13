@@ -494,13 +494,11 @@ class Trainer:
         inner_steps = int(self.configs["smlmt"].inner_steps)  # e.g., 1 or 5
 
         # Create an optimizer for the classifier parameters.
-        classifier_optimizer = torch.optim.SGD(
-            self.model.classifier_smlmt.parameters(), lr=inner_lr
-        )
+        inner_optimizer = torch.optim.SGD(self.model.parameters(), lr=inner_lr)
 
         # Use a single higher inner loop context for all inner steps.
         with higher.innerloop_ctx(
-            self.model.classifier_smlmt, classifier_optimizer, track_higher_grads=True
+            self.model.classifier_smlmt, inner_optimizer, track_higher_grads=True
         ) as (fclassifier, diffopt):
             # Helper function for checkpointing the support forward pass.
             def support_forward(input_ids, attention_mask):
