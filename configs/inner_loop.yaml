@@ -7,7 +7,7 @@ data:
     batch_size: 16
   
 checkpointing:
-  run_name: "inner_loop_100_20_2_6" # inner_steps, support, classes, run
+  run_name: "inner_loop_100_20_2_7" # inner_steps, support, classes, run
   save_every_n_steps: 100
 
   save_checkpoint_repo_id: "davidafrica/pico-maml"

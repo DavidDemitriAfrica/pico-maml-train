@@ -496,7 +496,7 @@ class Trainer:
         inner_lr = float(self.configs["smlmt"].inner_lr)
         inner_steps = int(self.configs["smlmt"].inner_steps)
 
-        classifier_optimizer = torch.optim.AdamW(
+        classifier_optimizer = torch.optim.Adam(
             self.model.classifier_smlmt.parameters(), lr=inner_lr
         )
 
