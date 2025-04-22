@@ -2,44 +2,32 @@
 # You can follow this template to create your own config file
 # Refer to the config files in the configs/ directory to see all the available options
 
-data:
-  dataloader:
-    batch_size: 16
-  
 checkpointing:
-  run_name: "revamp-test-1"
-  save_every_n_steps: 100
-
+  run_name: "pico-maml-tiny-6"
   save_checkpoint_repo_id: "davidafrica/pico-maml"
 
   learning_dynamics:
-    batch_size: 8
+    batch_size: 256
 
 model:
     d_model: 96
     activation_hidden_dim: 384
 
-evaluation:
-  metrics:
-    - paloma
-
-monitoring:
-  logging:
-    log_every_n_steps: 10
-
 training:
-  max_steps: 10000
-
   optimization:
-    lr: 0.001
-    lr_warmup_steps: 30
-
     gradient_accumulation_steps: 4
   
   fabric:
-    num_nodes: 1
+    num_nodes: 4
     num_devices: 4
-    
+  
+evaluation: 
+  metrics:
+    - paloma
+    - universal_ner
+  paloma:
+    batch_size: 32
+  
 smlmt:
   enabled: true
   probability: 0.5        # probability that the meta–learning component is computed on any given iteration

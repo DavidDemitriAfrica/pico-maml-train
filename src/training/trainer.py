@@ -466,112 +466,160 @@ class Trainer:
         query_labels: torch.Tensor,
         batch_step: int,
     ) -> torch.Tensor:
+        # Prepare local slices
         rank = self.fabric.global_rank
         world_size = self.fabric.world_size
-
         local_support_texts = support_texts[rank::world_size]
         local_query_texts = query_texts[rank::world_size]
         local_support_labels = support_labels[rank::world_size]
         local_query_labels = query_labels[rank::world_size]
 
+        # Tokenize
         support_inputs = self.tokenizer(
             local_support_texts,
             return_tensors="pt",
             padding=True,
             truncation=True,
             max_length=self.configs["smlmt"].max_length,
-        )
+        ).to(self.fabric.device)
         query_inputs = self.tokenizer(
             local_query_texts,
             return_tensors="pt",
             padding=True,
             truncation=True,
             max_length=self.configs["smlmt"].max_length,
-        )
-        for key in support_inputs:
-            support_inputs[key] = support_inputs[key].to(self.fabric.device)
-        for key in query_inputs:
-            query_inputs[key] = query_inputs[key].to(self.fabric.device)
+        ).to(self.fabric.device)
 
         inner_lr = float(self.configs["smlmt"].inner_lr)
         inner_steps = int(self.configs["smlmt"].inner_steps)
+        classifier = self.model.classifier_smlmt
+        # Snapshot initial classifier params
+        init_params = [p.detach().clone() for p in classifier.parameters()]
 
-        classifier_optimizer = torch.optim.Adam(
-            self.model.classifier_smlmt.parameters(), lr=inner_lr
-        )
+        classifier_optimizer = torch.optim.Adam(classifier.parameters(), lr=inner_lr)
 
         with higher.innerloop_ctx(
-            self.model.classifier_smlmt, classifier_optimizer, track_higher_grads=True
+            classifier, classifier_optimizer, track_higher_grads=True
         ) as (fclassifier, diffopt):
-            # Define a helper function for the support forward pass.
-            def support_forward(input_ids, attention_mask):
-                return self.model(
-                    input_ids,
-                    attention_mask=attention_mask,
+            # Extract initial support representations for drift
+            with torch.no_grad():
+                init_out = self.model(
+                    support_inputs["input_ids"],
+                    attention_mask=support_inputs["attention_mask"],
                     return_hidden=True,
                 )
+                _, init_hidden, _ = init_out
+                init_repr = init_hidden.mean(dim=1).detach()
 
-            inner_losses = []
-            inner_accuracies = []
-            # --- Inner loop: update classifier parameters on the support set ---
-            for inner_step in range(inner_steps):
-                # Use activation checkpointing to reduce memory usage.
-                support_out = torch.utils.checkpoint.checkpoint(
-                    support_forward,
+            inner_losses, inner_accs = [], []
+            grad_norms, update_norms = [], []
+            repr_drifts, logit_margins, pred_entropies = [], [], []
+
+            for step in range(inner_steps):
+                # Forward support
+                out = torch.utils.checkpoint.checkpoint(
+                    lambda ids, am: self.model(
+                        ids, attention_mask=am, return_hidden=True
+                    ),
                     support_inputs["input_ids"],
                     support_inputs["attention_mask"],
                     use_reentrant=False,
                 )
-                # Unpack output: assuming the model returns (output, hidden, extra)
-                _, support_hidden, _ = support_out
-                support_repr = support_hidden.mean(dim=1).bfloat16()
-                support_preds = fclassifier(support_repr)
-                support_loss = F.cross_entropy(support_preds, local_support_labels)
-                support_pred_labels = support_preds.argmax(dim=1)
-                support_accuracy = (
-                    (support_pred_labels == local_support_labels).float().mean()
-                )
-                self.fabric.log(
-                    "train/maml_inner_loss",
-                    support_loss.item(),
-                    step=(batch_step * inner_steps + inner_step),
-                )
-                self.fabric.log(
-                    "train/maml_inner_accuracy",
-                    support_accuracy.item(),
-                    step=(batch_step * inner_steps + inner_step),
-                )
-                inner_losses.append(support_loss.item())
-                inner_accuracies.append(support_accuracy.item())
-                # Update the classifier parameters in the inner loop.
-                diffopt.step(support_loss)
-            avg_inner_accuracy = sum(inner_accuracies) / len(inner_accuracies)
-            self.fabric.log(
-                "train/maml_inner_accuracy_avg", avg_inner_accuracy, step=batch_step
-            )
+                _, hidden, _ = out
+                repr = hidden.mean(dim=1)
+                logits = fclassifier(repr)
+                loss = F.cross_entropy(logits, local_support_labels)
+                preds = logits.argmax(dim=1)
+                acc = (preds == local_support_labels).float().mean().item()
 
-            # --- Query pass: compute meta loss using the updated classifier ---
-            def query_forward(input_ids, attention_mask):
-                return self.model(
-                    input_ids,
-                    attention_mask=attention_mask,
-                    return_hidden=True,
-                )
+                # Compute diagnostic metrics
+                # 1) Gradient norm
+                diffopt.step(loss)
+                grad_norm = 0.0
+                for p in fclassifier.parameters():
+                    if p.grad is not None:
+                        grad_norm += p.grad.norm().item() ** 2
+                grad_norm = grad_norm**0.5
+                grad_norms.append(grad_norm)
 
-            query_out = torch.utils.checkpoint.checkpoint(
-                query_forward,
+                # 2) Parameter update norm since init
+                upd_norm = 0.0
+                for p, p0 in zip(fclassifier.parameters(), init_params):
+                    upd_norm += (p.detach() - p0).norm().item() ** 2
+                upd_norm = upd_norm**0.5
+                update_norms.append(upd_norm)
+
+                # 3) Representation drift
+                drift = (repr.detach() - init_repr).norm(dim=1).mean().item()
+                repr_drifts.append(drift)
+
+                # 4) Logit margin (diff between top-2)
+                top2 = logits.topk(2, dim=1).values
+                margin = (top2[:, 0] - top2[:, 1]).mean().item()
+                logit_margins.append(margin)
+
+                # 5) Prediction entropy
+                probs = F.softmax(logits, dim=1)
+                ent = -(probs * probs.log()).sum(dim=1).mean().item()
+                pred_entropies.append(ent)
+
+                # Log per-step
+                idx = batch_step * inner_steps + step
+                for name, val in [
+                    ("train/maml_inner_loss", loss.item()),
+                    ("train/maml_inner_accuracy", acc),
+                    ("train/maml_grad_norm", grad_norm),
+                    ("train/maml_update_norm", upd_norm),
+                    ("train/maml_repr_drift", drift),
+                    ("train/maml_logit_margin", margin),
+                    ("train/maml_pred_entropy", ent),
+                ]:
+                    self.fabric.log(name, val, step=idx)
+
+                inner_losses.append(loss.item())
+                inner_accs.append(acc)
+
+            # Summary stats
+            def stats(arr):
+                t = torch.tensor(arr)
+                return t.mean().item(), t.std().item()
+
+            loss_mean, loss_std = stats(inner_losses)
+            acc_mean, acc_std = stats(inner_accs)
+            gn_mean, gn_std = stats(grad_norms)
+            un_mean, un_std = stats(update_norms)
+            rd_mean, rd_std = stats(repr_drifts)
+            lm_mean, lm_std = stats(logit_margins)
+            ent_mean, ent_std = stats(pred_entropies)
+
+            for metric, m, s in [
+                ("loss", loss_mean, loss_std),
+                ("accuracy", acc_mean, acc_std),
+                ("grad_norm", gn_mean, gn_std),
+                ("update_norm", un_mean, un_std),
+                ("repr_drift", rd_mean, rd_std),
+                ("logit_margin", lm_mean, lm_std),
+                ("pred_entropy", ent_mean, ent_std),
+            ]:
+                self.fabric.log(f"train/maml_{metric}_avg", m, step=batch_step)
+                self.fabric.log(f"train/maml_{metric}_std", s, step=batch_step)
+
+            # Query pass for meta-loss and performance
+            out_q = torch.utils.checkpoint.checkpoint(
+                lambda ids, am: self.model(ids, attention_mask=am, return_hidden=True),
                 query_inputs["input_ids"],
                 query_inputs["attention_mask"],
                 use_reentrant=False,
             )
-            _, query_hidden, _ = query_out
-            query_repr = query_hidden.mean(dim=1).bfloat16()
-            query_preds = fclassifier(query_repr)
-            meta_loss = F.cross_entropy(query_preds, local_query_labels)
+            _, hidden_q, _ = out_q
+            repr_q = hidden_q.mean(dim=1)
+            logits_q = fclassifier(repr_q)
+            meta_loss = F.cross_entropy(logits_q, local_query_labels)
+            q_acc = (logits_q.argmax(dim=1) == local_query_labels).float().mean().item()
+            self.fabric.log("train/maml_query_accuracy", q_acc, step=batch_step)
 
-        # Aggregate the meta loss across GPUs.
-        meta_loss_agg = self.fabric.all_reduce(meta_loss, reduce_op="mean")
-        return meta_loss_agg
+        # Aggregate meta-loss
+        return self.fabric.all_reduce(meta_loss, reduce_op="mean")
 
     def _training_loop(self) -> int:
         """Execute the main training loop.
