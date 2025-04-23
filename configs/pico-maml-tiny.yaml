@@ -43,4 +43,4 @@ smlmt:
   query_per_class: 5       # Q: number of query sentences per class
   smlmt_weight: 1  # weight to scale the meta–learning loss relative to the supervised loss
   inner_lr: 1e-3
-  inner_steps: 20 # e.g [20, 50, 100]
+  inner_steps: 10 # e.g [20, 50, 100]
