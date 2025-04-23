@@ -1,10 +1,6 @@
 # Demo config file 
 # You can follow this template to create your own config file
 # Refer to the config files in the configs/ directory to see all the available options
-
-data:
-  dataloader:
-    batch_size: 16
   
 checkpointing:
   run_name: "revamp-test-1"
