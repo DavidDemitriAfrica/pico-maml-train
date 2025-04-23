@@ -275,25 +275,14 @@ def compute_learning_dynamics_states(
     # sync
     fabric.barrier()
 
-    # keep track of where the original model was
-    orig_device = next(model.parameters()).device
-
-    # 1) move original model off GPU
-    model.to("cpu")
-
-    # 2) instantiate a fresh CPU-only clone
-    _model = Pico(model.config).to("cpu")
-    # load just the non-classifier weights
-    state_dict = {
-        k: v for k, v in model.state_dict().items() if not k.startswith("classifier")
-    }
-    _model.load_state_dict(state_dict)
+    # Build a brand-new CPU‐only copy
+    extract_model = Pico(model.config).cpu()
+    sd = {k: v for k, v in model.state_dict().items() if not k.startswith("classifier")}
+    extract_model.load_state_dict(sd)
+    extract_model.zero_grad()
 
     # **DON’T** call fabric.setup on _model—just use it in pure CPU mode.
-
-    # zero grads in case compute_gradients=True
-    _model.zero_grad()
-
+    # This is because we want to extract the states on CPU, and then move them to GPU later.
     # Setting up Dataloader for learning dynamics
     def _collate_fn(batch):
         return {"input_ids": [entry["input_ids"] for entry in batch]}
@@ -316,7 +305,7 @@ def compute_learning_dynamics_states(
 
     # run the extractor
     state_extractor = CheckpointStateExtractor(
-        checkpointing_config.learning_dynamics, fabric, _model
+        checkpointing_config.learning_dynamics, fabric, extract_model
     )
     checkpoint_activations, checkpoint_weights, checkpoint_gradients = (
         state_extractor.extract_states(
@@ -325,11 +314,8 @@ def compute_learning_dynamics_states(
     )
 
     # clean up
-    del _model
+    del extract_model
     torch.cuda.empty_cache()
-
-    # bring your *original* model back to whatever GPU it was on
-    model.to(orig_device)
     fabric.barrier()
 
     # NOTE: Trimming down the activations to match the dataset size;
