@@ -468,19 +468,21 @@ class Trainer:
     ) -> torch.Tensor:
         rank = self.fabric.global_rank
         world_size = self.fabric.world_size
+        # Local split
         local_support_texts = support_texts[rank::world_size]
         local_query_texts = query_texts[rank::world_size]
         local_support_labels = support_labels[rank::world_size]
         local_query_labels = query_labels[rank::world_size]
 
-        support_inputs = self.tokenizer(
+        # Tokenize and move to device
+        support_batch = self.tokenizer(
             local_support_texts,
             return_tensors="pt",
             padding=True,
             truncation=True,
             max_length=self.configs["smlmt"].max_length,
         ).to(self.fabric.device)
-        query_inputs = self.tokenizer(
+        query_batch = self.tokenizer(
             local_query_texts,
             return_tensors="pt",
             padding=True,
@@ -491,88 +493,105 @@ class Trainer:
         inner_lr = float(self.configs["smlmt"].inner_lr)
         inner_steps = int(self.configs["smlmt"].inner_steps)
         classifier = self.model.classifier_smlmt
+        # Snapshot initial parameters
         init_params = [p.detach().clone() for p in classifier.parameters()]
 
-        classifier_optimizer = torch.optim.Adam(classifier.parameters(), lr=inner_lr)
+        opt = torch.optim.Adam(classifier.parameters(), lr=inner_lr)
 
-        with higher.innerloop_ctx(
-            classifier, classifier_optimizer, track_higher_grads=True
-        ) as (fclassifier, diffopt):
+        with higher.innerloop_ctx(classifier, opt, track_higher_grads=True) as (
+            fclassifier,
+            diffopt,
+        ):
+            # Compute initial support representations
             with torch.no_grad():
-                init_out = self.model(
-                    support_inputs["input_ids"],
-                    attention_mask=support_inputs["attention_mask"],
+                out0 = self.model(
+                    support_batch["input_ids"],
+                    attention_mask=support_batch["attention_mask"],
                     return_hidden=True,
                 )
-                _, init_hidden, _ = init_out
-                init_repr = init_hidden.mean(dim=1).detach()
+                _, hidden0, _ = out0
+                init_repr = hidden0.mean(dim=1).bfloat16().detach()
 
+            # Containers
             inner_losses, inner_accs = [], []
             grad_norms, update_norms = [], []
             repr_drifts, logit_margins, pred_entropies = [], [], []
 
             for step in range(inner_steps):
+                # Forward pass
                 out = torch.utils.checkpoint.checkpoint(
                     lambda ids, am: self.model(
                         ids, attention_mask=am, return_hidden=True
                     ),
-                    support_inputs["input_ids"],
-                    support_inputs["attention_mask"],
+                    support_batch["input_ids"],
+                    support_batch["attention_mask"],
                     use_reentrant=False,
                 )
                 _, hidden, _ = out
-                repr = hidden.mean(
-                    dim=1
-                ).bfloat16()  # Cast to bfloat16 to match classifier dtype
-                logits = fclassifier(repr)
+                repr_t = hidden.mean(dim=1).bfloat16()
+                logits = fclassifier(repr_t)
                 loss = F.cross_entropy(logits, local_support_labels)
                 preds = logits.argmax(dim=1)
                 acc = (preds == local_support_labels).float().mean().item()
 
-                diffopt.step(loss)
-                grad_norm = torch.sqrt(
-                    sum(
-                        (p.grad.norm().item() ** 2)
-                        for p in fclassifier.parameters()
-                        if p.grad is not None
-                    )
+                # Compute gradients explicitly
+                grads = torch.autograd.grad(
+                    loss, fclassifier.parameters(), create_graph=True
                 )
-                update_norm = torch.sqrt(
+                # Gradient norm
+                grad_norm = torch.sqrt(
+                    sum(g.norm() ** 2 for g in grads if g is not None)
+                )
+                # Parameter update norm since init
+                upd_norm = torch.sqrt(
                     sum(
-                        ((p.detach() - p0).norm().item() ** 2)
+                        (p.detach() - p0).norm() ** 2
                         for p, p0 in zip(fclassifier.parameters(), init_params)
                     )
                 )
-                drift = (repr.detach() - init_repr).norm(dim=1).mean().item()
+                # Representation drift
+                drift = (repr_t.detach() - init_repr).norm(dim=1).mean()
+                # Logit margin: diff top1 - top2
                 top2 = logits.topk(2, dim=1).values
-                margin = (top2[:, 0] - top2[:, 1]).mean().item()
+                margin = (top2[:, 0] - top2[:, 1]).mean()
+                # Prediction entropy
                 probs = F.softmax(logits, dim=1)
-                ent = -(probs * probs.log()).sum(dim=1).mean().item()
+                ent = -(probs * probs.log()).sum(dim=1).mean()
 
+                # Step update
+                diffopt.step(loss)
+
+                # Log per-inner-step
                 idx = batch_step * inner_steps + step
                 for name, val in [
-                    ("train/maml_inner_loss", loss.item()),
-                    ("train/maml_inner_accuracy", acc),
+                    ("train/maml_inner_loss", loss),
+                    (
+                        "train/maml_inner_accuracy",
+                        torch.tensor(acc, device=self.fabric.device),
+                    ),
                     ("train/maml_grad_norm", grad_norm),
-                    ("train/maml_update_norm", update_norm),
+                    ("train/maml_update_norm", upd_norm),
                     ("train/maml_repr_drift", drift),
                     ("train/maml_logit_margin", margin),
                     ("train/maml_pred_entropy", ent),
                 ]:
-                    self.fabric.log(name, val, step=idx)
+                    self.fabric.log(name, val.item(), step=idx)
 
+                # Collect for summary
                 inner_losses.append(loss.item())
                 inner_accs.append(acc)
-                grad_norms.append(grad_norm)
-                update_norms.append(update_norm)
-                repr_drifts.append(drift)
-                logit_margins.append(margin)
-                pred_entropies.append(ent)
+                grad_norms.append(grad_norm.item())
+                update_norms.append(upd_norm.item())
+                repr_drifts.append(drift.item())
+                logit_margins.append(margin.item())
+                pred_entropies.append(ent.item())
 
-            def stats(arr):
-                t = torch.tensor(arr)
+            # Summary stats function
+            def stats(lst):
+                t = torch.tensor(lst, device=self.fabric.device)
                 return t.mean().item(), t.std().item()
 
+            # Log summary
             for metric, arr in [
                 ("loss", inner_losses),
                 ("accuracy", inner_accs),
@@ -586,21 +605,21 @@ class Trainer:
                 self.fabric.log(f"train/maml_{metric}_avg", m, step=batch_step)
                 self.fabric.log(f"train/maml_{metric}_std", s, step=batch_step)
 
+            # Query pass
             out_q = torch.utils.checkpoint.checkpoint(
                 lambda ids, am: self.model(ids, attention_mask=am, return_hidden=True),
-                query_inputs["input_ids"],
-                query_inputs["attention_mask"],
+                query_batch["input_ids"],
+                query_batch["attention_mask"],
                 use_reentrant=False,
             )
             _, hidden_q, _ = out_q
-            repr_q = hidden_q.mean(
-                dim=1
-            ).bfloat16()  # Cast to bfloat16 for query as well
+            repr_q = hidden_q.mean(dim=1).bfloat16()
             logits_q = fclassifier(repr_q)
             meta_loss = F.cross_entropy(logits_q, local_query_labels)
             q_acc = (logits_q.argmax(dim=1) == local_query_labels).float().mean().item()
             self.fabric.log("train/maml_query_accuracy", q_acc, step=batch_step)
 
+        # Return aggregated meta-loss
         return self.fabric.all_reduce(meta_loss, reduce_op="mean")
 
     def _training_loop(self) -> int:
