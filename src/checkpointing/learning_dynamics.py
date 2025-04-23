@@ -272,22 +272,37 @@ def compute_learning_dynamics_states(
     Returns:
         A dictionary containing the activations, weights, and optionally gradients of the model.
     """
-
-    # NOTE: Synchronizing processes for fabric dataloader setup
+    # sync
     fabric.barrier()
-    model.to("cpu")  # Offloading model to CPU
+
+    # keep track of where the original model was
+    orig_device = next(model.parameters()).device
+
+    # 1) move original model off GPU
+    model.to("cpu")
+
+    # 2) instantiate a fresh CPU-only clone
+    _model = Pico(model.config).to("cpu")
+    # load just the non-classifier weights
+    state_dict = {
+        k: v for k, v in model.state_dict().items() if not k.startswith("classifier")
+    }
+    _model.load_state_dict(state_dict)
+
+    # **DON’T** call fabric.setup on _model—just use it in pure CPU mode.
+
+    # zero grads in case compute_gradients=True
+    _model.zero_grad()
 
     # Setting up Dataloader for learning dynamics
     def _collate_fn(batch):
         return {"input_ids": [entry["input_ids"] for entry in batch]}
 
     batch_size = checkpointing_config.learning_dynamics.batch_size
-    sub_batch_size = batch_size // fabric.world_size
+    sub_batch_size = (
+        batch_size // fabric.world_size
+    )  # NOTE: this is the batch size per process
 
-    # NOTE: Make sure to set drop_last to False, otherwise the last batch will be dropped
-    # and we will not have a complete set of activations for the last sample. Also,
-    # we need to set shuffle to False, otherwise the activations will be shuffled across
-    # processes and we will not be able to interleave them correctly.
     extractor_dataloader = DataLoader(
         dataset,
         batch_size=sub_batch_size,
@@ -299,41 +314,21 @@ def compute_learning_dynamics_states(
         extractor_dataloader, use_distributed_sampler=True
     )
 
-    # Create a new model instance with the same parameters but zero gradients.
-    _model = Pico(model.config)
-    # Get the full state dict from the current model.
-    state_dict = model.state_dict()
-    # Filter out keys that start with 'classifier'.
-    filtered_state = {
-        k: v for k, v in state_dict.items() if not k.startswith("classifier")
-    }
-    _model.load_state_dict(filtered_state)
-
-    if isinstance(fabric.strategy, DeepSpeedStrategy):
-        _model, _ = fabric.setup(_model, DummyOptimizer(_model.parameters()))
-    else:
-        _model = fabric.setup(_model)
-
-    _model.zero_grad()
-
-    # setup forward hooks for the model to save activations and weights at each layer
-    state_extractor = CheckpointStateExtractor(
-        checkpointing_config.learning_dynamics, fabric, _model
-    )
-
+    # run the extractor
+    state_extractor = CheckpointStateExtractor(checkpointing_config, fabric, _model)
     checkpoint_activations, checkpoint_weights, checkpoint_gradients = (
         state_extractor.extract_states(
             extractor_dataloader, compute_gradients=compute_gradients
         )
     )
 
+    # clean up
     del _model
     torch.cuda.empty_cache()
 
-    # NOTE: Synchronizing processes for model setup
+    # bring your *original* model back to whatever GPU it was on
+    model.to(orig_device)
     fabric.barrier()
-
-    model.to(fabric.device)
 
     # NOTE: Trimming down the activations to match the dataset size;
     # This is because the DataSampler might add extra samples to the dataset to make it evenly divisible
