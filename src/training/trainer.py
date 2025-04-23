@@ -560,7 +560,7 @@ class Trainer:
 
                 # Step update
                 diffopt.step(loss)
-
+                idx = step
                 for name, val in [
                     ("train/maml_inner_loss", loss),
                     (
@@ -573,7 +573,7 @@ class Trainer:
                     ("train/maml_logit_margin", margin),
                     ("train/maml_pred_entropy", ent),
                 ]:
-                    self.fabric.log(name, val.item(), step=batch_step)
+                    self.fabric.log(name, val.item(), step=idx)
 
                 # Collect for summary
                 inner_losses.append(loss.item())
