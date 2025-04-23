@@ -21,13 +21,27 @@ training:
     num_nodes: 4
     num_devices: 4
   
-evaluation: 
+evaluation:
   metrics:
     - paloma
-    - universal_ner
+  paloma:
+    evaluation: 
   paloma:
     batch_size: 32
-  
+
+monitoring:
+  logging:
+    log_every_n_steps: 10
+
+training:
+  max_steps: 10000
+
+  optimization:
+    lr: 0.001
+    lr_warmup_steps: 30
+
+    gradient_accumulation_steps: 44
+
 smlmt:
   enabled: true
   probability: 0.5        # probability that the meta–learning component is computed on any given iteration

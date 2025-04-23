@@ -466,7 +466,6 @@ class Trainer:
         query_labels: torch.Tensor,
         batch_step: int,
     ) -> torch.Tensor:
-        # Prepare local slices
         rank = self.fabric.global_rank
         world_size = self.fabric.world_size
         local_support_texts = support_texts[rank::world_size]
@@ -474,7 +473,6 @@ class Trainer:
         local_support_labels = support_labels[rank::world_size]
         local_query_labels = query_labels[rank::world_size]
 
-        # Tokenize
         support_inputs = self.tokenizer(
             local_support_texts,
             return_tensors="pt",
@@ -493,7 +491,6 @@ class Trainer:
         inner_lr = float(self.configs["smlmt"].inner_lr)
         inner_steps = int(self.configs["smlmt"].inner_steps)
         classifier = self.model.classifier_smlmt
-        # Snapshot initial classifier params
         init_params = [p.detach().clone() for p in classifier.parameters()]
 
         classifier_optimizer = torch.optim.Adam(classifier.parameters(), lr=inner_lr)
@@ -501,7 +498,6 @@ class Trainer:
         with higher.innerloop_ctx(
             classifier, classifier_optimizer, track_higher_grads=True
         ) as (fclassifier, diffopt):
-            # Extract initial support representations for drift
             with torch.no_grad():
                 init_out = self.model(
                     support_inputs["input_ids"],
@@ -516,7 +512,6 @@ class Trainer:
             repr_drifts, logit_margins, pred_entropies = [], [], []
 
             for step in range(inner_steps):
-                # Forward support
                 out = torch.utils.checkpoint.checkpoint(
                     lambda ids, am: self.model(
                         ids, attention_mask=am, return_hidden=True
@@ -526,50 +521,40 @@ class Trainer:
                     use_reentrant=False,
                 )
                 _, hidden, _ = out
-                repr = hidden.mean(dim=1)
+                repr = hidden.mean(
+                    dim=1
+                ).bfloat16()  # Cast to bfloat16 to match classifier dtype
                 logits = fclassifier(repr)
                 loss = F.cross_entropy(logits, local_support_labels)
                 preds = logits.argmax(dim=1)
                 acc = (preds == local_support_labels).float().mean().item()
 
-                # Compute diagnostic metrics
-                # 1) Gradient norm
                 diffopt.step(loss)
-                grad_norm = 0.0
-                for p in fclassifier.parameters():
-                    if p.grad is not None:
-                        grad_norm += p.grad.norm().item() ** 2
-                grad_norm = grad_norm**0.5
-                grad_norms.append(grad_norm)
-
-                # 2) Parameter update norm since init
-                upd_norm = 0.0
-                for p, p0 in zip(fclassifier.parameters(), init_params):
-                    upd_norm += (p.detach() - p0).norm().item() ** 2
-                upd_norm = upd_norm**0.5
-                update_norms.append(upd_norm)
-
-                # 3) Representation drift
+                grad_norm = torch.sqrt(
+                    sum(
+                        (p.grad.norm().item() ** 2)
+                        for p in fclassifier.parameters()
+                        if p.grad is not None
+                    )
+                )
+                update_norm = torch.sqrt(
+                    sum(
+                        ((p.detach() - p0).norm().item() ** 2)
+                        for p, p0 in zip(fclassifier.parameters(), init_params)
+                    )
+                )
                 drift = (repr.detach() - init_repr).norm(dim=1).mean().item()
-                repr_drifts.append(drift)
-
-                # 4) Logit margin (diff between top-2)
                 top2 = logits.topk(2, dim=1).values
                 margin = (top2[:, 0] - top2[:, 1]).mean().item()
-                logit_margins.append(margin)
-
-                # 5) Prediction entropy
                 probs = F.softmax(logits, dim=1)
                 ent = -(probs * probs.log()).sum(dim=1).mean().item()
-                pred_entropies.append(ent)
 
-                # Log per-step
                 idx = batch_step * inner_steps + step
                 for name, val in [
                     ("train/maml_inner_loss", loss.item()),
                     ("train/maml_inner_accuracy", acc),
                     ("train/maml_grad_norm", grad_norm),
-                    ("train/maml_update_norm", upd_norm),
+                    ("train/maml_update_norm", update_norm),
                     ("train/maml_repr_drift", drift),
                     ("train/maml_logit_margin", margin),
                     ("train/maml_pred_entropy", ent),
@@ -578,33 +563,29 @@ class Trainer:
 
                 inner_losses.append(loss.item())
                 inner_accs.append(acc)
+                grad_norms.append(grad_norm)
+                update_norms.append(update_norm)
+                repr_drifts.append(drift)
+                logit_margins.append(margin)
+                pred_entropies.append(ent)
 
-            # Summary stats
             def stats(arr):
                 t = torch.tensor(arr)
                 return t.mean().item(), t.std().item()
 
-            loss_mean, loss_std = stats(inner_losses)
-            acc_mean, acc_std = stats(inner_accs)
-            gn_mean, gn_std = stats(grad_norms)
-            un_mean, un_std = stats(update_norms)
-            rd_mean, rd_std = stats(repr_drifts)
-            lm_mean, lm_std = stats(logit_margins)
-            ent_mean, ent_std = stats(pred_entropies)
-
-            for metric, m, s in [
-                ("loss", loss_mean, loss_std),
-                ("accuracy", acc_mean, acc_std),
-                ("grad_norm", gn_mean, gn_std),
-                ("update_norm", un_mean, un_std),
-                ("repr_drift", rd_mean, rd_std),
-                ("logit_margin", lm_mean, lm_std),
-                ("pred_entropy", ent_mean, ent_std),
+            for metric, arr in [
+                ("loss", inner_losses),
+                ("accuracy", inner_accs),
+                ("grad_norm", grad_norms),
+                ("update_norm", update_norms),
+                ("repr_drift", repr_drifts),
+                ("logit_margin", logit_margins),
+                ("pred_entropy", pred_entropies),
             ]:
+                m, s = stats(arr)
                 self.fabric.log(f"train/maml_{metric}_avg", m, step=batch_step)
                 self.fabric.log(f"train/maml_{metric}_std", s, step=batch_step)
 
-            # Query pass for meta-loss and performance
             out_q = torch.utils.checkpoint.checkpoint(
                 lambda ids, am: self.model(ids, attention_mask=am, return_hidden=True),
                 query_inputs["input_ids"],
@@ -612,13 +593,14 @@ class Trainer:
                 use_reentrant=False,
             )
             _, hidden_q, _ = out_q
-            repr_q = hidden_q.mean(dim=1)
+            repr_q = hidden_q.mean(
+                dim=1
+            ).bfloat16()  # Cast to bfloat16 for query as well
             logits_q = fclassifier(repr_q)
             meta_loss = F.cross_entropy(logits_q, local_query_labels)
             q_acc = (logits_q.argmax(dim=1) == local_query_labels).float().mean().item()
             self.fabric.log("train/maml_query_accuracy", q_acc, step=batch_step)
 
-        # Aggregate meta-loss
         return self.fabric.all_reduce(meta_loss, reduce_op="mean")
 
     def _training_loop(self) -> int:
