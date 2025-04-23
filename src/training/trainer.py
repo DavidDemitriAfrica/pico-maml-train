@@ -788,6 +788,7 @@ class Trainer:
                         dataset=training_batch_dataset,
                         compute_gradients=True,
                     )
+                    self.model.to(self.fabric.device)
                     save_learning_dynamics_states(
                         checkpointing_config=self.configs["checkpointing"],
                         checkpoint_step=batch_step,
@@ -808,6 +809,7 @@ class Trainer:
                             dataset=self.learning_dynamics_eval_dataset,
                             compute_gradients=False,
                         )
+                        self.model.to(self.fabric.device)
                         save_learning_dynamics_states(
                             checkpointing_config=self.configs["checkpointing"],
                             checkpoint_step=batch_step,
