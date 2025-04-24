@@ -283,8 +283,14 @@ def compute_learning_dynamics_states(
     )
 
     # Create a new model instance with same parameters but zero gradients
-    _model = Pico(model_config=model.config)
-    _model.load_state_dict(model.state_dict())
+    _model = Pico(model.config)
+    state_dict = model.state_dict()
+    filtered_state = {
+        k: v for k, v in state_dict.items() if not k.startswith("classifier")
+    }
+    _model.load_state_dict(filtered_state)
+
+    # _model.load_state_dict(model.state_dict())
 
     if isinstance(fabric.strategy, DeepSpeedStrategy):
         _model, _ = fabric.setup(_model, DummyOptimizer(_model.parameters()))
