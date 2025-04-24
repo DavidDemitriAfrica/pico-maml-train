@@ -61,34 +61,34 @@ class CheckpointStateExtractor:
             compute_gradients: Whether to compute the gradients of the model parameters.
 
         Returns:
-            A tuple of three dictionaries:
-            - checkpoint_activations: {layer_name: Tensor[num_samples, hidden_dim]}
-            - checkpoint_weights:     {layer_name: Tensor[hidden_dim, hidden_dim]}
-            - checkpoint_gradients:   {layer_name: Tensor[hidden_dim, hidden_dim]} (only if compute_gradients)
+            A dictionary containing the activations, weights, and optionally gradients of the model.
         """
         checkpoint_activations = {}
         checkpoint_weights = {}
 
-        # 1) register forward hooks to capture activations & weights
+        # NOTE: to extract activations and weights, we need to setup forward hooks on the layers
+        # of the model that we are interested in. This is a good intro to forward hooks if you
+        # are not familiar: https://web.stanford.edu/~nanbhas/blog/forward-hooks-pytorch/
         forward_hooks = self._setup_forward_hooks(
             checkpoint_activations,
             checkpoint_weights,
         )
 
-        # 2) offload the model to CPU so that all LD work lives off-GPU
-        cpu = torch.device("cpu")
-        self.model.to(cpu)
+        ########################################################
+        #
+        # Forward Pass: Extract activations and weights; and compute gradients
+        #
+        ########################################################
 
-        # 3) iterate batches
         for sub_batch in dataloader:
-            # load inputs onto CPU
-            _input_ids = torch.tensor(sub_batch["input_ids"], device=cpu)
+            _input_ids = torch.tensor(sub_batch["input_ids"], device=self.fabric.device)
 
             if compute_gradients:
-                # prepare labels if needed
                 if "labels" in sub_batch:
                     input_ids = _input_ids
-                    labels = torch.tensor(sub_batch["labels"], device=cpu)
+                    labels = torch.tensor(
+                        sub_batch["labels"], device=self.fabric.device
+                    )
                 else:
                     input_ids = _input_ids[:, :-1]
                     labels = _input_ids[:, 1:]
@@ -96,44 +96,50 @@ class CheckpointStateExtractor:
                 input_ids = _input_ids
                 labels = None
 
-            # forward (and backward) on CPU
             if labels is None:
+                # we can throw away the outputs, we are only interested in the hidden states
                 with torch.no_grad():
                     _ = self.model(input_ids)
             else:
+                # NOTE: if we are computing gradients, calling backwards will compute the gradients
+                # of the model parameters.
                 outputs, _ = self.model(input_ids)
-                outputs = outputs.transpose(1, 2)  # (bsz, vocab, seq_len)
+                outputs = outputs.transpose(1, 2)
                 loss = F.cross_entropy(outputs, labels)
-                # CPU backward: gradients fill .grad on each param
-                loss.backward()
+                self.fabric.backward(loss, model=self.model)
 
-            # clear any cached GPU memory (just in case)
-            if torch.cuda.is_available():
-                torch.cuda.empty_cache()
-
-        # 4) remove hooks
+        # cleanup forward hooks
+        # NOTE this is not strictly necessary, since self.model is a deepcopy of the original model
+        # but it is good practice to remove the hooks after the forward pass is complete.
         for hook in forward_hooks:
             hook.remove()
 
-        # 5) gather gradients (if computed)
+        ########################################################
+        #
+        # Extract gradients from the target tensors of the model
+        #
+        ########################################################
+
         layer_suffixes = self.learning_dynamics_config.layer_suffixes
         checkpoint_gradients = {}
         if compute_gradients:
             for name, param in self.model.named_parameters():
-                if any(suf in name for suf in layer_suffixes) and name.endswith(
-                    ".weight"
+                # only do this for the weight matrix of the layer_suffixes
+                if (
+                    any(layer_suffix in name for layer_suffix in layer_suffixes)
+                    and "weight" in name
                 ):
                     if isinstance(self.fabric.strategy, DeepSpeedStrategy):
-                        grad = deepspeed.utils.safe_get_full_grad(param)
+                        _grad = deepspeed.utils.safe_get_full_grad(param)
                     else:
-                        grad = param.grad
-                    assert grad is not None, f"Gradient is None for layer: {name}"
-                    layer_name = re.sub(r"\.weight$", "", name)
-                    checkpoint_gradients[layer_name] = grad.detach().cpu()
+                        _grad = param.grad
 
-        # 6) cleanup: zero out grads, restore model to GPU
+                    assert _grad is not None, f"Gradient is None for layer: {name}"
+                    name = re.sub(r"\.weight", "", name)
+                    checkpoint_gradients[name] = _grad.detach().cpu()
+
+        # zero out the gradients
         self.model.zero_grad()
-        self.model.to(self.fabric.device)
 
         return checkpoint_activations, checkpoint_weights, checkpoint_gradients
 
