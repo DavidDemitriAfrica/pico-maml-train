@@ -789,12 +789,13 @@ class Trainer:
                 if self.should_compute_learning_dynamics:
                     self.log(f"Step {batch_step} -- 📈 Saving Learning Dynamics")
                     training_batch_dataset = Dataset.from_dict(training_batch)
+                    # ——— NO GRADIENTS here to shrink peak memory ———
                     learning_dynamics_train_states = compute_learning_dynamics_states(
                         checkpointing_config=self.configs["checkpointing"],
                         fabric=self.fabric,
                         model=self.model,
                         dataset=training_batch_dataset,
-                        compute_gradients=True,
+                        compute_gradients=False,
                     )
                     save_learning_dynamics_states(
                         checkpointing_config=self.configs["checkpointing"],
