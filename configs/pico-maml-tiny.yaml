@@ -3,7 +3,7 @@
 # Refer to the config files in the configs/ directory to see all the available options
   
 checkpointing:
-  run_name: "pico-maml-tiny-4"
+  run_name: "pico-maml-tiny-5"
   save_checkpoint_repo_id: "davidafrica/pico-maml"
 
   learning_dynamics:
@@ -18,7 +18,7 @@ training:
     lr: 0.001
     lr_warmup_steps: 30
 
-    gradient_accumulation_steps: 44
+    gradient_accumulation_steps: 4
 
 
   fabric:
@@ -37,10 +37,10 @@ monitoring:
 
 smlmt:
   enabled: true
-  probability: 0.5        # probability that the meta–learning component is computed on any given iteration
+  probability: 0.2        # probability that the meta–learning component is computed on any given iteration
   num_classes: 3           # K: number of target words per task e.g [2, 5, 10]
   support_per_class: 10    # S: number of support sentences per class e.g [5, 10, 20]
   query_per_class: 5       # Q: number of query sentences per class
   smlmt_weight: 1  # weight to scale the meta–learning loss relative to the supervised loss
   inner_lr: 1e-3
-  inner_steps: 20 # e.g [20, 50, 100]
+  inner_steps: 10 # e.g [20, 50, 100]

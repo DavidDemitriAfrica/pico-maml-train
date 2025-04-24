@@ -691,16 +691,15 @@ class Trainer:
             # --- 2. Optional MAML (SMLMT) Meta–Loss ---
             meta_loss = None
             if self.smlmt_enabled:
-                # Only rank 0 decides whether to trigger the meta branch.
                 if self.fabric.global_rank == 0:
-                    flag_value = (
-                        1.0 if random.random() < self.smlmt_probability else 0.0
+                    # draw a proper 0/1 Bernoulli sample from PyTorch’s RNG (which Fabric seeded for us)
+                    flag = torch.bernoulli(
+                        torch.tensor(self.smlmt_probability, device=self.fabric.device)
                     )
                 else:
-                    flag_value = 0.0  # Placeholder for non-rank0 processes.
-                flag_tensor = torch.tensor(flag_value, device=self.fabric.device)
-                flag_tensor = self.fabric.broadcast(flag_tensor, src=0)
-                should_compute_meta = bool(flag_tensor.item() > 0.5)
+                    flag = torch.zeros((), device=self.fabric.device)
+                flag = self.fabric.broadcast(flag, src=0)
+                should_compute_meta = bool(flag.item() == 1.0)
                 if should_compute_meta and batch_step > 0:
                     self.log("MAML SMLMT branch triggered", level=logging.INFO)
 
