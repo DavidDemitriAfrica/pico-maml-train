@@ -409,6 +409,9 @@ class Trainer:
                     checkpoint_step=final_step,
                     prefix="val",
                 )
+                # --- free up any leftover GPU memory before the next forward pass
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
 
         # Handle checkpointing and final evaluation
         if final_step % self.configs["checkpointing"].save_every_n_steps != 0:
@@ -438,6 +441,9 @@ class Trainer:
                     fabric=self.fabric,
                     evaluation_results=evaluation_results,
                 )
+                # --- free up any leftover GPU memory before the next forward pass
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
 
         self.log(f"🎉 Training complete! Final step: {final_step}")
 
