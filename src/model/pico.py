@@ -318,20 +318,23 @@ class Attention(nn.Module):
         keys = keys.transpose(1, 2)
         values = values.transpose(1, 2)
 
-        # see if cuda available
-        if self.fabric and self.fabric.device.type == "cuda":
-            backend = SDPBackend.CUDNN_ATTENTION
-        else:
-            backend = SDPBackend.MATH
-
-        with sdpa_kernel(backends=[backend]):
-            attn_output = F.scaled_dot_product_attention(
-                queries.contiguous(),
-                keys.contiguous(),
-                values.contiguous(),
-                attn_mask=mask,
-                enable_gqa=True if self.n_rep > 1 else False,
-            )
+        with torch.cuda.amp.autocast(enabled=True):
+            # allow PyTorch to pick its memory-efficient kernel first
+            backends = [
+                SDPBackend.CUDNN_ATTENTION,  # fallback to cuDNN
+                SDPBackend.MATH,  # math fallback
+                SDPBackend.PYTORCH,  # PyTorch’s own Flash/MemEff SDP
+            ]
+            with sdpa_kernel(backends=backends):
+                attn_output = F.scaled_dot_product_attention(
+                    queries,
+                    keys,
+                    values,
+                    attn_mask=mask,
+                    enable_gqa=(self.n_heads > self.n_kv_heads),
+                    dropout_p=self.attn_dropout,
+                    is_causal=True,
+                )
 
         attn_output = attn_output.transpose(1, 2).contiguous().view(bsz, seq_len, -1)
         output = self.o_proj(attn_output)
