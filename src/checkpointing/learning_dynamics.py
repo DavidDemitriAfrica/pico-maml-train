@@ -82,15 +82,13 @@ class CheckpointStateExtractor:
         #
         ########################################################
 
+        device = next(self.model.parameters()).device
         for sub_batch in dataloader:
-            _input_ids = torch.tensor(sub_batch["input_ids"], device=self.fabric.device)
-
+            _input_ids = torch.tensor(sub_batch["input_ids"], device=device)
             if compute_gradients:
                 if "labels" in sub_batch:
                     input_ids = _input_ids
-                    labels = torch.tensor(
-                        sub_batch["labels"], device=self.fabric.device
-                    )
+                    labels = torch.tensor(sub_batch["labels"], device=device)
                 else:
                     input_ids = _input_ids[:, :-1]
                     labels = _input_ids[:, 1:]

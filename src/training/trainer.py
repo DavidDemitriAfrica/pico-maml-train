@@ -481,14 +481,16 @@ class Trainer:
             padding=True,
             truncation=True,
             max_length=self.configs["smlmt"].max_length,
-        ).to(self.fabric.device)
+        )
+        support_batch = {k: v.to(self.fabric.device) for k, v in support_batch.items()}
         query_batch = self.tokenizer(
             local_query_texts,
             return_tensors="pt",
             padding=True,
             truncation=True,
             max_length=self.configs["smlmt"].max_length,
-        ).to(self.fabric.device)
+        )
+        query_batch = {k: v.to(self.fabric.device) for k, v in query_batch.items()}
 
         inner_lr = float(self.configs["smlmt"].inner_lr)
         inner_steps = int(self.configs["smlmt"].inner_steps)
