@@ -695,7 +695,7 @@ class Trainer:
                 flag_tensor = torch.tensor(flag_value, device=self.fabric.device)
                 flag_tensor = self.fabric.broadcast(flag_tensor, src=0)
                 should_compute_meta = bool(flag_tensor.item() > 0.5)
-                if should_compute_meta:
+                if should_compute_meta and batch_step > 0:
                     self.log("MAML SMLMT branch triggered", level=logging.INFO)
 
                     # Generate one SMLMT task (episode)
