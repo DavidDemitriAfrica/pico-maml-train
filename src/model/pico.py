@@ -323,7 +323,6 @@ class Attention(nn.Module):
             backends = [
                 SDPBackend.CUDNN_ATTENTION,  # fallback to cuDNN
                 SDPBackend.MATH,  # math fallback
-                SDPBackend.PYTORCH,  # PyTorch’s own Flash/MemEff SDP
             ]
             with sdpa_kernel(backends=backends):
                 attn_output = F.scaled_dot_product_attention(
