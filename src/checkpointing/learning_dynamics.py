@@ -6,27 +6,25 @@ We save the learning dynamics states in a subdirectory of the checkpointing dire
 
 import os
 import re
-import torch
-import torch.optim as optim
-from torch.nn import functional as F
-from torch.utils.data import DataLoader
-from huggingface_hub import upload_folder
-import logging
+from typing import Dict, Optional
 
 import deepspeed
-
-from src.model import Pico
-
-
-# typing imports
+import torch
 import torch.nn as nn
-from typing import Dict, Optional
+import torch.optim as optim
 from datasets import Dataset
-from transformers import PreTrainedTokenizerBase
-from src.config import CheckpointingConfig
-from src.config.checkpointing_config import LearningDynamicsCheckpointingConfig
+from huggingface_hub import upload_folder
 from lightning.fabric import Fabric
 from lightning.fabric.strategies import DeepSpeedStrategy
+from lightning.fabric.utilities.rank_zero import rank_zero_only
+from torch.nn import functional as F
+from torch.utils.data import DataLoader
+from transformers import PreTrainedTokenizerBase
+
+from src.config import CheckpointingConfig
+from src.config.checkpointing_config import LearningDynamicsCheckpointingConfig
+from src.model.pico import Pico
+from src.training.utils.io import use_backoff
 
 
 # NOTE: DeepSpeed requires a dummy optimizer to be passed in to the setup function
@@ -107,20 +105,12 @@ class CheckpointStateExtractor:
                 # of the model parameters.
                 outputs, _ = self.model(input_ids)
                 outputs = outputs.transpose(1, 2)
-
-                if outputs.dim() == 4:
-                    p, b, v, s = outputs.shape
-                    outputs = outputs.reshape(p * b, v, s)  # => (p*b, vocab, seq_len)
-                if labels.dim() == 3:
-                    # e.g. (p, b, seq_len)
-                    p2, b2, s2 = labels.shape
-                    labels = labels.reshape(p2 * b2, s2)  # => (p*b, seq_len)
                 loss = F.cross_entropy(outputs, labels)
                 self.fabric.backward(loss, model=self.model)
 
-        # cleanup forward hooks - NOTE this is not strictly necessary, since self.model is a
-        # deepcopy of the original model; but it is good practice to remove the hooks after the
-        # forward pass is complete.
+        # cleanup forward hooks
+        # NOTE this is not strictly necessary, since self.model is a deepcopy of the original model
+        # but it is good practice to remove the hooks after the forward pass is complete.
         for hook in forward_hooks:
             hook.remove()
 
@@ -209,16 +199,8 @@ class CheckpointStateExtractor:
         def _forward_hook(module, _, module_out):
             sequence_idx = self.learning_dynamics_config.sequence_idx
 
-            # If the configured index is out of bounds, clamp it to the maximum valid index.
-            if sequence_idx >= module_out.shape[1]:
-                clamped_idx = module_out.shape[1] - 1
-                logging.warning(
-                    f"configured sequence_idx ({sequence_idx}) is out of bounds for module {module_name} "
-                    f"(max index is {module_out.shape[1]-1}). Using {clamped_idx} instead."
-                )
-                sequence_idx = clamped_idx
-
             local_activations = module_out[:, sequence_idx, :].detach()
+
             # Gather activations from all processes using fabric
             gathered_activations = self.fabric.all_gather(local_activations)
 
@@ -235,6 +217,7 @@ class CheckpointStateExtractor:
                 checkpoint_activations[module_name] = (
                     gathered_activations.detach().cpu()
                 )
+
                 # extract the weight matrix just once
                 weight_matrix = module.weight.detach().cpu()
                 checkpoint_weights[module_name] = weight_matrix
@@ -299,15 +282,9 @@ def compute_learning_dynamics_states(
         extractor_dataloader, use_distributed_sampler=True
     )
 
-    # Create a new model instance with the same parameters but zero gradients.
-    _model = Pico(model.config)
-    # Get the full state dict from the current model.
-    state_dict = model.state_dict()
-    # Filter out keys that start with 'classifier'.
-    filtered_state = {
-        k: v for k, v in state_dict.items() if not k.startswith("classifier")
-    }
-    _model.load_state_dict(filtered_state)
+    # Create a new model instance with same parameters but zero gradients
+    _model = Pico(model_config=model.config)
+    _model.load_state_dict(model.state_dict())
 
     if isinstance(fabric.strategy, DeepSpeedStrategy):
         _model, _ = fabric.setup(_model, DummyOptimizer(_model.parameters()))
@@ -353,6 +330,8 @@ def compute_learning_dynamics_states(
     }
 
 
+@rank_zero_only
+@use_backoff()
 def save_learning_dynamics_states(
     checkpointing_config: CheckpointingConfig,
     checkpoint_step: int,
@@ -384,6 +363,8 @@ def save_learning_dynamics_states(
                 │      └── {prefix}_data/ # if learning_dynamics_dataset is provided
                 └── latest -> step_{checkpoint_step}/
 
+    NOTE: this function is only called on rank 0
+
     Args:
         checkpointing_config: The configuration object for checkpointing.
         checkpoint_step: The checkpoint step at which the learning dynamics states were computed.
@@ -394,10 +375,6 @@ def save_learning_dynamics_states(
             including input IDs that need to be decoded. (optional)
         tokenizer: The tokenizer used to decode input IDs into text. (optional)
     """
-
-    # Only rank 0 process saves checkpoints in distributed training
-    if fabric.global_rank != 0:
-        return
 
     runs_dir = checkpointing_config.runs_dir
     run_name = checkpointing_config.run_name
@@ -424,10 +401,6 @@ def save_learning_dynamics_states(
 
             for entry in learning_dynamics_dataset:
                 input_ids = entry["input_ids"]
-                # If the first element is also a list, flatten
-                if len(input_ids) > 0 and isinstance(input_ids[0], list):
-                    # Flatten from 2D -> 1D
-                    input_ids = [tok for row in input_ids for tok in row]
                 decoded_text = tokenizer.decode(input_ids, skip_special_tokens=True)
                 detokenized_dataset["input_ids"].append(input_ids)
                 detokenized_dataset["text"].append(decoded_text)
@@ -439,12 +412,12 @@ def save_learning_dynamics_states(
         )
         learning_dynamics_dataset.save_to_disk(learning_dynamics_dataset_path)
 
-    if checkpointing_config.save_checkpoint_repo_id is not None:
+    if checkpointing_config.save_to_hf:
         # Upload the HF model
         upload_folder(
             folder_path=learning_dynamics_path,
             path_in_repo=learning_dynamics_dir,
-            repo_id=checkpointing_config.save_checkpoint_repo_id,
+            repo_id=checkpointing_config.hf_checkpoint.repo_id,
             commit_message=f"Saving Learning Dynamics Data ({prefix}) -- Step {checkpoint_step}",
             revision=checkpointing_config.run_name,
             token=os.getenv("HF_TOKEN"),
