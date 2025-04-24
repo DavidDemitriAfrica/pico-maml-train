@@ -331,7 +331,6 @@ class Attention(nn.Module):
                     values,
                     attn_mask=mask,
                     enable_gqa=(self.n_heads > self.n_kv_heads),
-                    dropout_p=self.attn_dropout,
                     is_causal=True,
                 )
 
