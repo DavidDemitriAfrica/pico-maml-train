@@ -68,6 +68,7 @@ class CheckpointingConfig:
 
     # How often to save checkpoints
     save_every_n_steps: int = 2000
+    save_to_hf: Optional[bool] = True
 
     # Should be in the format of <(username or )>/<repo_name>, e.g. pico-lm/pico-7b
     save_checkpoint_repo_id: Optional[str] = "davidafrica/pico-maml"
