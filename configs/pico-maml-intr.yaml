@@ -3,7 +3,7 @@
 # Refer to the config files in the configs/ directory to see all the available options
   
 checkpointing:
-  run_name: "pico-maml-demo-5"
+  run_name: "pico-maml-demo-6"
   save_checkpoint_repo_id: "davidafrica/pico-maml"
 
   learning_dynamics:
@@ -33,11 +33,11 @@ evaluation:
   metrics:
     - paloma
   paloma:
-    batch_size: 16
+    batch_size: 256
 
 monitoring:
   logging:
-    log_every_n_steps: 10
+    log_every_n_steps: 100
 
 smlmt:
   enabled: true
