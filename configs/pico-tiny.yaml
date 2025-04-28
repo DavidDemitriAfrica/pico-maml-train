@@ -3,7 +3,7 @@
 # Refer to the config files in the configs/ directory to see all the available options
 
 checkpointing:
-  run_name: "pico-tiny-1"
+  run_name: "pico-tiny-2"
   save_checkpoint_repo_id: "pico-lm/pico-tiny"
 
   learning_dynamics:
