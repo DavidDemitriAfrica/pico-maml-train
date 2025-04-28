@@ -22,7 +22,7 @@ training:
     lr: 0.001
     lr_warmup_steps: 30
 
-    gradient_accumulation_steps: 128
+    gradient_accumulation_steps: 4
 
 
   fabric:
@@ -33,7 +33,7 @@ evaluation:
   metrics:
     - paloma
   paloma:
-    batch_size: 256
+    batch_size: 32
 
 monitoring:
   logging:
