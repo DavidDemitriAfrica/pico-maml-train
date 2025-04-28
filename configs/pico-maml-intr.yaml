@@ -9,16 +9,20 @@ checkpointing:
   learning_dynamics:
     batch_size: 16
 
+data:
+  dataloader:
+    batch_size: 16
+
 model:
-    d_model: 24
-    activation_hidden_dim: 96
+    d_model: 12
+    activation_hidden_dim: 48
 
 training:
   optimization:
     lr: 0.001
     lr_warmup_steps: 30
 
-    gradient_accumulation_steps: 4
+    gradient_accumulation_steps: 128
 
 
   fabric:
@@ -29,7 +33,7 @@ evaluation:
   metrics:
     - paloma
   paloma:
-    batch_size: 32
+    batch_size: 16
 
 monitoring:
   logging:

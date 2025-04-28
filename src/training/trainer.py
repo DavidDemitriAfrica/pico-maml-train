@@ -54,8 +54,8 @@ import higher
 class Trainer:
     def __init__(self, config_path: str):
         """
-        Initializes the Trainer class. This Trainer class implements a train method, which is the
-        main entry point for training the Pico model. Before calling train, the Trainer class
+        Initializes the Trainer class. This Trainer class implements a `train` method, which is the
+        main entry point for training the Pico model. Before calling `train`, the Trainer class
         initializes the following:
 
             - Configuration loading and validation
@@ -307,7 +307,7 @@ class Trainer:
         This method orchestrates the complete training process by:
         1. Creating an initial checkpoint to save the starting state and evaluate the model as a
             baseline
-        2. Running the main training loop via _training_loop
+        2. Running the main training loop via `_training_loop`
         3. Handling final checkpointing and evaluation
 
         The training progress is tracked through checkpoints and evaluations
@@ -375,7 +375,7 @@ class Trainer:
 
         ########################################################
         #
-        # Main Training Loop (see _training_loop for details)
+        # Main Training Loop (see `_training_loop` for details)
         #
         ########################################################
 
@@ -409,6 +409,9 @@ class Trainer:
                     checkpoint_step=final_step,
                     prefix="val",
                 )
+                # --- free up any leftover GPU memory before the next forward pass
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
 
         # Handle checkpointing and final evaluation
         if final_step % self.configs["checkpointing"].save_every_n_steps != 0:
@@ -438,6 +441,9 @@ class Trainer:
                     fabric=self.fabric,
                     evaluation_results=evaluation_results,
                 )
+                # --- free up any leftover GPU memory before the next forward pass
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
 
         self.log(f"🎉 Training complete! Final step: {final_step}")
 
@@ -468,110 +474,159 @@ class Trainer:
     ) -> torch.Tensor:
         rank = self.fabric.global_rank
         world_size = self.fabric.world_size
-
+        # Local split
         local_support_texts = support_texts[rank::world_size]
         local_query_texts = query_texts[rank::world_size]
         local_support_labels = support_labels[rank::world_size]
         local_query_labels = query_labels[rank::world_size]
 
-        support_inputs = self.tokenizer(
+        # Tokenize and move to device
+        support_batch = self.tokenizer(
             local_support_texts,
             return_tensors="pt",
             padding=True,
             truncation=True,
             max_length=self.configs["smlmt"].max_length,
         )
-        query_inputs = self.tokenizer(
+        support_batch = {k: v.to(self.fabric.device) for k, v in support_batch.items()}
+        query_batch = self.tokenizer(
             local_query_texts,
             return_tensors="pt",
             padding=True,
             truncation=True,
             max_length=self.configs["smlmt"].max_length,
         )
-        for key in support_inputs:
-            support_inputs[key] = support_inputs[key].to(self.fabric.device)
-        for key in query_inputs:
-            query_inputs[key] = query_inputs[key].to(self.fabric.device)
+        query_batch = {k: v.to(self.fabric.device) for k, v in query_batch.items()}
 
         inner_lr = float(self.configs["smlmt"].inner_lr)
         inner_steps = int(self.configs["smlmt"].inner_steps)
+        classifier = self.model.classifier_smlmt
+        # Snapshot initial parameters
+        init_params = [p.detach().clone() for p in classifier.parameters()]
 
-        classifier_optimizer = torch.optim.Adam(
-            self.model.classifier_smlmt.parameters(), lr=inner_lr
-        )
+        opt = torch.optim.Adam(classifier.parameters(), lr=inner_lr)
 
-        with higher.innerloop_ctx(
-            self.model.classifier_smlmt, classifier_optimizer, track_higher_grads=True
-        ) as (fclassifier, diffopt):
-            # Define a helper function for the support forward pass.
-            def support_forward(input_ids, attention_mask):
-                return self.model(
-                    input_ids,
-                    attention_mask=attention_mask,
+        with higher.innerloop_ctx(classifier, opt, track_higher_grads=False) as (
+            fclassifier,
+            diffopt,
+        ):
+            # Compute initial support representations
+            with torch.no_grad():
+                out0 = self.model(
+                    support_batch["input_ids"],
+                    attention_mask=support_batch["attention_mask"],
                     return_hidden=True,
                 )
+                _, hidden0, _ = out0
+                init_repr = hidden0.mean(dim=1).bfloat16().detach()
 
-            inner_losses = []
-            inner_accuracies = []
-            # --- Inner loop: update classifier parameters on the support set ---
-            for inner_step in range(inner_steps):
-                # Use activation checkpointing to reduce memory usage.
-                support_out = torch.utils.checkpoint.checkpoint(
-                    support_forward,
-                    support_inputs["input_ids"],
-                    support_inputs["attention_mask"],
+            # Containers
+            inner_losses, inner_accs = [], []
+            grad_norms, update_norms = [], []
+            repr_drifts, logit_margins, pred_entropies = [], [], []
+
+            for step in range(inner_steps):
+                # Forward pass
+                out = torch.utils.checkpoint.checkpoint(
+                    lambda ids, am: self.model(
+                        ids, attention_mask=am, return_hidden=True
+                    ),
+                    support_batch["input_ids"],
+                    support_batch["attention_mask"],
                     use_reentrant=False,
                 )
-                # Unpack output: assuming the model returns (output, hidden, extra)
-                _, support_hidden, _ = support_out
-                support_repr = support_hidden.mean(dim=1).bfloat16()
-                support_preds = fclassifier(support_repr)
-                support_loss = F.cross_entropy(support_preds, local_support_labels)
-                support_pred_labels = support_preds.argmax(dim=1)
-                support_accuracy = (
-                    (support_pred_labels == local_support_labels).float().mean()
-                )
-                self.fabric.log(
-                    "train/maml_inner_loss",
-                    support_loss.item(),
-                    step=(batch_step * inner_steps + inner_step),
-                )
-                self.fabric.log(
-                    "train/maml_inner_accuracy",
-                    support_accuracy.item(),
-                    step=(batch_step * inner_steps + inner_step),
-                )
-                inner_losses.append(support_loss.item())
-                inner_accuracies.append(support_accuracy.item())
-                # Update the classifier parameters in the inner loop.
-                diffopt.step(support_loss)
-            avg_inner_accuracy = sum(inner_accuracies) / len(inner_accuracies)
-            self.fabric.log(
-                "train/maml_inner_accuracy_avg", avg_inner_accuracy, step=batch_step
-            )
+                _, hidden, _ = out
+                repr_t = hidden.mean(dim=1).bfloat16()
+                logits = fclassifier(repr_t)
+                loss = F.cross_entropy(logits, local_support_labels)
+                preds = logits.argmax(dim=1)
+                acc = (preds == local_support_labels).float().mean().item()
 
-            # --- Query pass: compute meta loss using the updated classifier ---
-            def query_forward(input_ids, attention_mask):
-                return self.model(
-                    input_ids,
-                    attention_mask=attention_mask,
-                    return_hidden=True,
+                # Compute gradients explicitly
+                grads = torch.autograd.grad(
+                    loss, fclassifier.parameters(), create_graph=True
                 )
+                # Gradient norm
+                grad_norm = torch.sqrt(
+                    sum(g.norm() ** 2 for g in grads if g is not None)
+                )
+                # Parameter update norm since init
+                upd_norm = torch.sqrt(
+                    sum(
+                        (p.detach() - p0).norm() ** 2
+                        for p, p0 in zip(fclassifier.parameters(), init_params)
+                    )
+                )
+                # Representation drift
+                drift = (repr_t.detach() - init_repr).norm(dim=1).mean()
+                # Logit margin: diff top1 - top2
+                top2 = logits.topk(2, dim=1).values
+                margin = (top2[:, 0] - top2[:, 1]).mean()
+                # Prediction entropy
+                probs = F.softmax(logits, dim=1)
+                ent = -(probs * probs.log()).sum(dim=1).mean()
 
-            query_out = torch.utils.checkpoint.checkpoint(
-                query_forward,
-                query_inputs["input_ids"],
-                query_inputs["attention_mask"],
+                # Step update
+                diffopt.step(loss)
+                idx = step
+                for name, val in [
+                    ("train/maml_inner_loss", loss),
+                    (
+                        "train/maml_inner_accuracy",
+                        torch.tensor(acc, device=self.fabric.device),
+                    ),
+                    ("train/maml_grad_norm", grad_norm),
+                    ("train/maml_update_norm", upd_norm),
+                    ("train/maml_repr_drift", drift),
+                    ("train/maml_logit_margin", margin),
+                    ("train/maml_pred_entropy", ent),
+                ]:
+                    self.fabric.log(name, val.item(), step=idx)
+
+                # Collect for summary
+                inner_losses.append(loss.item())
+                inner_accs.append(acc)
+                grad_norms.append(grad_norm.item())
+                update_norms.append(upd_norm.item())
+                repr_drifts.append(drift.item())
+                logit_margins.append(margin.item())
+                pred_entropies.append(ent.item())
+
+            # Summary stats function
+            def stats(lst):
+                t = torch.tensor(lst, device=self.fabric.device)
+                return t.mean().item(), t.std().item()
+
+            # Log summary
+            for metric, arr in [
+                ("loss", inner_losses),
+                ("accuracy", inner_accs),
+                ("grad_norm", grad_norms),
+                ("update_norm", update_norms),
+                ("repr_drift", repr_drifts),
+                ("logit_margin", logit_margins),
+                ("pred_entropy", pred_entropies),
+            ]:
+                m, s = stats(arr)
+                self.fabric.log(f"train/maml_{metric}_avg", m, step=batch_step)
+                self.fabric.log(f"train/maml_{metric}_std", s, step=batch_step)
+
+            # Query pass
+            out_q = torch.utils.checkpoint.checkpoint(
+                lambda ids, am: self.model(ids, attention_mask=am, return_hidden=True),
+                query_batch["input_ids"],
+                query_batch["attention_mask"],
                 use_reentrant=False,
             )
-            _, query_hidden, _ = query_out
-            query_repr = query_hidden.mean(dim=1).bfloat16()
-            query_preds = fclassifier(query_repr)
-            meta_loss = F.cross_entropy(query_preds, local_query_labels)
+            _, hidden_q, _ = out_q
+            repr_q = hidden_q.mean(dim=1).bfloat16()
+            logits_q = fclassifier(repr_q)
+            meta_loss = F.cross_entropy(logits_q, local_query_labels)
+            q_acc = (logits_q.argmax(dim=1) == local_query_labels).float().mean().item()
+            self.fabric.log("train/maml_query_accuracy", q_acc, step=batch_step)
 
-        # Aggregate the meta loss across GPUs.
-        meta_loss_agg = self.fabric.all_reduce(meta_loss, reduce_op="mean")
-        return meta_loss_agg
+        # Return aggregated meta-loss
+        return self.fabric.all_reduce(meta_loss, reduce_op="mean")
 
     def _training_loop(self) -> int:
         """Execute the main training loop.
@@ -636,17 +691,16 @@ class Trainer:
             # --- 2. Optional MAML (SMLMT) Meta–Loss ---
             meta_loss = None
             if self.smlmt_enabled:
-                # Only rank 0 decides whether to trigger the meta branch.
                 if self.fabric.global_rank == 0:
-                    flag_value = (
-                        1.0 if random.random() < self.smlmt_probability else 0.0
+                    # draw a proper 0/1 Bernoulli sample from PyTorch’s RNG (which Fabric seeded for us)
+                    flag = torch.bernoulli(
+                        torch.tensor(self.smlmt_probability, device=self.fabric.device)
                     )
                 else:
-                    flag_value = 0.0  # Placeholder for non-rank0 processes.
-                flag_tensor = torch.tensor(flag_value, device=self.fabric.device)
-                flag_tensor = self.fabric.broadcast(flag_tensor, src=0)
-                should_compute_meta = bool(flag_tensor.item() > 0.5)
-                if should_compute_meta:
+                    flag = torch.zeros((), device=self.fabric.device)
+                flag = self.fabric.broadcast(flag, src=0)
+                should_compute_meta = bool(flag.item() == 1.0)
+                if should_compute_meta and batch_step > 0:
                     self.log("MAML SMLMT branch triggered", level=logging.INFO)
 
                     # Generate one SMLMT task (episode)
@@ -734,12 +788,13 @@ class Trainer:
                 if self.should_compute_learning_dynamics:
                     self.log(f"Step {batch_step} -- 📈 Saving Learning Dynamics")
                     training_batch_dataset = Dataset.from_dict(training_batch)
+                    # ——— NO GRADIENTS here to shrink peak memory ———
                     learning_dynamics_train_states = compute_learning_dynamics_states(
                         checkpointing_config=self.configs["checkpointing"],
                         fabric=self.fabric,
                         model=self.model,
                         dataset=training_batch_dataset,
-                        compute_gradients=True,
+                        compute_gradients=False,
                     )
                     save_learning_dynamics_states(
                         checkpointing_config=self.configs["checkpointing"],
