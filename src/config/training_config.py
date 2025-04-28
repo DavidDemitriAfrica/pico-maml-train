@@ -10,7 +10,7 @@ from ._constants import GRADIENT_ACCUMULATION_STEPS
 
 @dataclass
 class FabricConfig:
-    num_nodes: int = 1
+    num_nodes: int = 4
     num_devices: int = 4
     precision: str = "bf16-mixed"
     accelerator: str = "cuda"
