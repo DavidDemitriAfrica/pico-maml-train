@@ -372,6 +372,8 @@ class Trainer:
                         evaluation_results=evaluation_results,
                         checkpoint_step=self.initial_batch_step,
                     )
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
 
         ########################################################
         #
