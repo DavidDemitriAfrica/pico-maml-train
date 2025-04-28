@@ -76,7 +76,7 @@ class CheckpointingConfig:
     learning_dynamics_dir: str = LEARNING_DYNAMICS_DIR
 
     # How often to save checkpoints
-    save_every_n_steps: int = 2000
+    save_every_n_steps: int = 1000
     save_to_hf: Optional[bool] = True
 
     # Should be in the format of <(username or )>/<repo_name>, e.g. pico-lm/pico-7b
