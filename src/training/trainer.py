@@ -80,7 +80,8 @@ class Trainer:
         from src.model.pico import RoPE
 
         RoPE._freqs_cis = None
-
+        torch.backends.cudnn.benchmark = False
+        torch.backends.cudnn.deterministic = True
         # Setup Run Directory (i.e. where we store checkpoints, logs, etc.)
         initialize_run_dir(checkpointing_config=self.configs["checkpointing"])
 
