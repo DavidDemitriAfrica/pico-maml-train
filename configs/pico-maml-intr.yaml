@@ -26,7 +26,7 @@ training:
 
 
   fabric:
-    num_nodes: 1
+    num_nodes: 3
     num_devices: 4
   
 evaluation:
