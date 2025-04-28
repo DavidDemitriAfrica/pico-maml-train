@@ -7,11 +7,11 @@ checkpointing:
   save_checkpoint_repo_id: "davidafrica/pico-maml"
 
   learning_dynamics:
-    batch_size: 16
+    batch_size: 256
 
 data:
   dataloader:
-    batch_size: 16
+    batch_size: 256
 
 model:
     d_model: 12
