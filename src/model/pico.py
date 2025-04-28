@@ -318,19 +318,15 @@ class Attention(nn.Module):
         keys = keys.transpose(1, 2)
         values = values.transpose(1, 2)
 
-        # see if cuda available
-        if self.fabric and self.fabric.device.type == "cuda":
-            backend = SDPBackend.CUDNN_ATTENTION
-        else:
-            backend = SDPBackend.MATH
-
-        with sdpa_kernel(backends=[backend]):
+        with sdpa_kernel(backends=[SDPBackend.MEM_EFFICIENT, SDPBackend.MATH]):
             attn_output = F.scaled_dot_product_attention(
                 queries.contiguous(),
                 keys.contiguous(),
                 values.contiguous(),
                 attn_mask=mask,
-                enable_gqa=True if self.n_rep > 1 else False,
+                dropout_p=0.0,
+                is_causal=False,
+                enable_gqa=self.n_rep > 1,
             )
 
         attn_output = attn_output.transpose(1, 2).contiguous().view(bsz, seq_len, -1)
