@@ -8,6 +8,7 @@ import click
 from pathlib import Path
 from src.training.trainer import Trainer
 import torch
+import torch.backends.cuda as bc
 import sys
 
 sys.setrecursionlimit(10000)
@@ -23,6 +24,13 @@ sys.setrecursionlimit(10000)
 def main(config_path: Path) -> None:
     """Train the Pico language model using the specified configuration."""
     torch.set_float32_matmul_precision("medium")
+    # turn off cuDNN-v8 SDP autotuning
+    bc.enable_cudnn_sdp(False)
+
+    # make sure you still get one of the faster backends:
+    bc.enable_flash_sdp(True)
+    bc.enable_mem_efficient_sdp(True)
+    bc.enable_math_sdp(True)
 
     trainer = Trainer(config_path=str(config_path))
     trainer.train()
