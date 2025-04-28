@@ -10,7 +10,6 @@ For more details, see: https://huggingface.co/datasets/allenai/paloma
 import evaluate
 from datasets import load_dataset
 from datasets.utils.logging import disable_progress_bar, enable_progress_bar
-import torch
 
 # typing imports
 from src.config.evaluation_config import PalomaEvaluationConfig
@@ -28,12 +27,7 @@ def run_paloma_evaluation(
         model_path (str): Path to the model checkpoint to be evaluated
         paloma_config (PalomaEvaluationConfig): Configuration for Paloma evaluation
     """
-    # ─── backend tweaks ───────────────────────────────────────────────────────────────
-    torch.backends.cuda.enable_cudnn_sdp = False
-    torch.backends.cuda.enable_flash_sdp = True
-    torch.backends.cuda.enable_mem_efficient_sdp = True
-    torch.backends.cuda.enable_math_sdp = True
-    # ────────────────────────────────────────────────────────────────────────────────
+
     disable_progress_bar()
 
     perplexity = evaluate.load("pico-lm/perplexity")

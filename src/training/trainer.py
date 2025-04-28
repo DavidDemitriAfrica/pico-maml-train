@@ -80,8 +80,7 @@ class Trainer:
         from src.model.pico import RoPE
 
         RoPE._freqs_cis = None
-        torch.backends.cudnn.benchmark = False
-        torch.backends.cudnn.deterministic = True
+
         # Setup Run Directory (i.e. where we store checkpoints, logs, etc.)
         initialize_run_dir(checkpointing_config=self.configs["checkpointing"])
 
@@ -507,7 +506,7 @@ class Trainer:
 
         opt = torch.optim.Adam(classifier.parameters(), lr=inner_lr)
 
-        with higher.innerloop_ctx(classifier, opt, track_higher_grads=True) as (
+        with higher.innerloop_ctx(classifier, opt, track_higher_grads=False) as (
             fclassifier,
             diffopt,
         ):
