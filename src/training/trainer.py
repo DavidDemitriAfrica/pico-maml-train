@@ -54,8 +54,8 @@ import higher
 class Trainer:
     def __init__(self, config_path: str):
         """
-        Initializes the Trainer class. This Trainer class implements a train method, which is the
-        main entry point for training the Pico model. Before calling train, the Trainer class
+        Initializes the Trainer class. This Trainer class implements a `train` method, which is the
+        main entry point for training the Pico model. Before calling `train`, the Trainer class
         initializes the following:
 
             - Configuration loading and validation
@@ -80,7 +80,8 @@ class Trainer:
         from src.model.pico import RoPE
 
         RoPE._freqs_cis = None
-
+        torch.backends.cudnn.benchmark = False
+        torch.backends.cudnn.deterministic = True
         # Setup Run Directory (i.e. where we store checkpoints, logs, etc.)
         initialize_run_dir(checkpointing_config=self.configs["checkpointing"])
 
@@ -307,7 +308,7 @@ class Trainer:
         This method orchestrates the complete training process by:
         1. Creating an initial checkpoint to save the starting state and evaluate the model as a
             baseline
-        2. Running the main training loop via _training_loop
+        2. Running the main training loop via `_training_loop`
         3. Handling final checkpointing and evaluation
 
         The training progress is tracked through checkpoints and evaluations
@@ -375,7 +376,7 @@ class Trainer:
 
         ########################################################
         #
-        # Main Training Loop (see _training_loop for details)
+        # Main Training Loop (see `_training_loop` for details)
         #
         ########################################################
 
@@ -409,6 +410,9 @@ class Trainer:
                     checkpoint_step=final_step,
                     prefix="val",
                 )
+                # --- free up any leftover GPU memory before the next forward pass
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
 
         # Handle checkpointing and final evaluation
         if final_step % self.configs["checkpointing"].save_every_n_steps != 0:
@@ -438,6 +442,9 @@ class Trainer:
                     fabric=self.fabric,
                     evaluation_results=evaluation_results,
                 )
+                # --- free up any leftover GPU memory before the next forward pass
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
 
         self.log(f"🎉 Training complete! Final step: {final_step}")
 
@@ -685,17 +692,16 @@ class Trainer:
             # --- 2. Optional MAML (SMLMT) Meta–Loss ---
             meta_loss = None
             if self.smlmt_enabled:
-                # Only rank 0 decides whether to trigger the meta branch.
                 if self.fabric.global_rank == 0:
-                    flag_value = (
-                        1.0 if random.random() < self.smlmt_probability else 0.0
+                    # draw a proper 0/1 Bernoulli sample from PyTorch’s RNG (which Fabric seeded for us)
+                    flag = torch.bernoulli(
+                        torch.tensor(self.smlmt_probability, device=self.fabric.device)
                     )
                 else:
-                    flag_value = 0.0  # Placeholder for non-rank0 processes.
-                flag_tensor = torch.tensor(flag_value, device=self.fabric.device)
-                flag_tensor = self.fabric.broadcast(flag_tensor, src=0)
-                should_compute_meta = bool(flag_tensor.item() > 0.5)
-                if should_compute_meta:
+                    flag = torch.zeros((), device=self.fabric.device)
+                flag = self.fabric.broadcast(flag, src=0)
+                should_compute_meta = bool(flag.item() == 1.0)
+                if should_compute_meta and batch_step > 0:
                     self.log("MAML SMLMT branch triggered", level=logging.INFO)
 
                     # Generate one SMLMT task (episode)
@@ -783,12 +789,13 @@ class Trainer:
                 if self.should_compute_learning_dynamics:
                     self.log(f"Step {batch_step} -- 📈 Saving Learning Dynamics")
                     training_batch_dataset = Dataset.from_dict(training_batch)
+                    # ——— NO GRADIENTS here to shrink peak memory ———
                     learning_dynamics_train_states = compute_learning_dynamics_states(
                         checkpointing_config=self.configs["checkpointing"],
                         fabric=self.fabric,
                         model=self.model,
                         dataset=training_batch_dataset,
-                        compute_gradients=True,
+                        compute_gradients=False,
                     )
                     save_learning_dynamics_states(
                         checkpointing_config=self.configs["checkpointing"],

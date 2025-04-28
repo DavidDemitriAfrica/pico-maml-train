@@ -36,7 +36,7 @@ monitoring:
     log_every_n_steps: 10
 
 smlmt:
-  enabled: true
+  enabled: false
   probability: 0.2        # probability that the meta–learning component is computed on any given iteration
   num_classes: 3           # K: number of target words per task e.g [2, 5, 10]
   support_per_class: 10    # S: number of support sentences per class e.g [5, 10, 20]
