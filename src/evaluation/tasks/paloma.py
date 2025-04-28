@@ -16,34 +16,40 @@ import torch
 from src.config.evaluation_config import PalomaEvaluationConfig
 
 
-def run_paloma_evaluation(model_path: str, paloma_config: PalomaEvaluationConfig):
+def run_paloma_evaluation(
+    model_path: str,
+    paloma_config: PalomaEvaluationConfig,
+) -> None:
+    """Run Perplexity evaluation on the Paloma evaluation dataset.
+
+    We use the HuggingFace evaluate library to load in and compute the perplexity metric.
+
+    Args:
+        model_path (str): Path to the model checkpoint to be evaluated
+        paloma_config (PalomaEvaluationConfig): Configuration for Paloma evaluation
+    """
+    # ─── backend tweaks ───────────────────────────────────────────────────────────────
+    torch.backends.cuda.enable_cudnn_sdp = False
+    torch.backends.cuda.enable_flash_sdp = True
+    torch.backends.cuda.enable_mem_efficient_sdp = True
+    torch.backends.cuda.enable_math_sdp = True
+    # ────────────────────────────────────────────────────────────────────────────────
     disable_progress_bar()
 
-    # 1) load the metric
     perplexity = evaluate.load("pico-lm/perplexity")
-
-    # 2) load your data
     dataset = load_dataset(
         paloma_config.dataset_name, split=paloma_config.dataset_split
     )["text"]
+    perplexity_result = perplexity.compute(
+        model_id=model_path,
+        predictions=dataset,
+        add_start_token=False,
+        max_length=paloma_config.max_length,
+        batch_size=paloma_config.batch_size,
+        trust_remote_code=True,
+    )
 
-    # 3) monkey-patch torch.cuda.is_available → False
-    orig_cuda_avail = torch.cuda.is_available
-    torch.cuda.is_available = lambda: False
-
-    try:
-        # 4) this compute will now “see” no GPU and load everything on CPU
-        result = perplexity.compute(
-            model_id=model_path,
-            predictions=dataset,
-            add_start_token=False,
-            max_length=paloma_config.max_length,
-            batch_size=paloma_config.batch_size,
-            trust_remote_code=True,
-        )
-    finally:
-        # 5) restore the original function
-        torch.cuda.is_available = orig_cuda_avail
+    mean_perplexity = perplexity_result["mean_perplexity"]
 
     enable_progress_bar()
-    return result["mean_perplexity"]
+    return mean_perplexity
