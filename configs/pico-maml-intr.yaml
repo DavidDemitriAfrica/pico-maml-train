@@ -3,7 +3,7 @@
 # Refer to the config files in the configs/ directory to see all the available options
   
 checkpointing:
-  run_name: "pico-maml-demo-3"
+  run_name: "pico-maml-demo-4"
   save_checkpoint_repo_id: "davidafrica/pico-maml"
 
   learning_dynamics:
