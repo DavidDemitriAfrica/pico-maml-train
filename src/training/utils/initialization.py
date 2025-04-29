@@ -9,6 +9,7 @@ As always, this code is meant to be basic. We hard-code the obvious defaults, an
 more experimental stuff to you.
 """
 
+import glob
 import lightning as L
 import torch
 import os
@@ -231,68 +232,45 @@ def initialize_dataset(
     initial_batch_step: Optional[int] = 0,
     return_fast_forward_steps: bool = False,
 ):
-    """Initialize dataset based on the given config.
-
-    This function will return a dataset object, and optionally a fast_forward_steps value.
-
-    The fast_forward_steps value is the number of steps that we need to fast-forward an iterator by,
-    so that we can continue from a certain batch of data we would have seen had training not previously
-    stopped. Depending on how the dataset is loaded, the amount of steps to fast-forward may be
-    different from the initial_batch_step value.
-
-    NOTE: This functionality is primarily useful for streaming datasets (which for large
-    datasets is most of the time).
-
-    Args:
-        data_config: Configuration object containing dataset settings.
-        fabric: A Lightning Fabric instance.
-        initial_batch_step: The initial batch step to fast-forward to.
-        return_fast_forward_steps: Whether to return the fast-forward steps value.
-
-    Returns:
-        Dataset: Initialized dataset object.
-        Optional[int]: Number of steps to fast-forward the iterator by, if return_fast_forward_steps is True.
-    """
-
-    datasets_config.STREAMING_READ_MAX_RETRIES = 40  # default is 20
-    datasets_config.STREAMING_READ_RETRY_INTERVAL = 10  # default is 5
-    download_config = DownloadConfig(
-        max_retries=10,  # default is 1 and can lead to pre-mature HTTPS errors
-    )
+    # bump retry limits for streaming
+    datasets_config.STREAMING_READ_MAX_RETRIES = 40
+    datasets_config.STREAMING_READ_RETRY_INTERVAL = 10
+    download_config = DownloadConfig(max_retries=10)
 
     fast_forward_steps = 0
 
     if data_config.dataset.name == "pico-lm/pretokenized-dolma":
-        # NOTE: We know that the dataset is sharded into 10,000 shards, so we can easily compute
-        # the data file that we need to load in that contains the batch of data at
-        # initial_batch_step.
+        # point at your locally downloaded shards
+        cache_root = os.environ.get("HF_DATASETS_CACHE")
+        assert cache_root, "HF_DATASETS_CACHE must point to your local cache"
 
-        if initial_batch_step > 0:
+        data_dir = os.path.join(
+            cache_root, "datasets", "pico-lm", "pretokenized-dolma", "data"
+        )
+        # find all of the train-xxxxx-of-10000.parquet files
+        all_shards = sorted(glob.glob(os.path.join(data_dir, "train-*-of-*.parquet")))
+        assert all_shards, f"no parquet files found in {data_dir}"
+
+        # compute which shard to start from if resuming
+        if initial_batch_step and initial_batch_step > 0:
             examples_per_shard = 20_480
-            total_shards = 10_000
             batches_per_shard = examples_per_shard // data_config.dataloader.batch_size
             shard_idx = initial_batch_step // batches_per_shard
-
-            data_files = [
-                f"data/train-{str(_shard_idx).zfill(5)}-of-{total_shards}.parquet"
-                for _shard_idx in range(shard_idx, total_shards)
-            ]
-
             fast_forward_steps = initial_batch_step % batches_per_shard
+            data_files = all_shards[shard_idx:]
         else:
-            data_files = None
+            data_files = all_shards
 
+        # load from local parquet files directly, streaming them
         base_dataset = load_dataset(
-            data_config.dataset.name,
+            "parquet",
+            data_files=data_files,
             split="train",
             streaming=True,
-            data_files=data_files,
             download_config=download_config,
         )
     else:
-        # NOTE: For other datasets, you might want to add some custom loading logic, especially
-        # to help with loading or fast-forwarding to the correct batch.
-
+        # fallback to HF download if it’s any other dataset
         base_dataset = load_dataset(
             data_config.dataset.name,
             split="train",
@@ -300,12 +278,10 @@ def initialize_dataset(
             download_config=download_config,
         )
 
+    # wrap in sharding for Fabric if needed
     if data_config.dataset.name == "pico-lm/pretokenized-dolma":
         from .data import ShardedIterableDataset
 
-        # NOTE: We wrap the dataset in a ShardedIterableDataset, which is a custom class that
-        # allows us to shard an iterable dataset across multiple processes. This is useful for
-        # distributed training, where we want data-parallelism.
         dataset = ShardedIterableDataset(
             base_dataset, fabric.global_rank, fabric.world_size
         )
