@@ -267,7 +267,7 @@ def initialize_dataset(
         # the data file that we need to load in that contains the batch of data at
         # initial_batch_step.
 
-        if initial_batch_step is not None:
+        if initial_batch_step > 0:
             examples_per_shard = 20_480
             total_shards = 10_000
             batches_per_shard = examples_per_shard // data_config.dataloader.batch_size
