@@ -20,11 +20,11 @@ from datetime import datetime
 import wandb
 from huggingface_hub import add_collection_item, create_repo, create_branch
 from wandb.integration.lightning.fabric import WandbLogger
-from datasets import load_dataset, Dataset, DownloadConfig
+from datasets import load_dataset, Dataset, DownloadConfig, DownloadMode
 from datasets import config as datasets_config
-from torch.utils.data import DataLoader
+from torch.utils.data import DataLoader, IterableDataset
 from transformers import AutoTokenizer
-from typing import Optional, Dict, Union
+from typing import Optional, Dict, Union, Tuple
 import warnings
 import sys
 
@@ -39,6 +39,7 @@ from src.config import (
 )
 
 from src.training.utils.io import use_backoff
+from src.training.utils.data import ShardedIterableDataset
 
 from lightning.fabric.loggers import Logger as FabricLogger
 
@@ -231,8 +232,8 @@ def initialize_dataset(
     fabric: L.Fabric,
     initial_batch_step: Optional[int] = 0,
     return_fast_forward_steps: bool = False,
-):
-    # bump retry limits for streaming
+) -> Tuple[IterableDataset, int]:
+    # bump HF retries
     datasets_config.STREAMING_READ_MAX_RETRIES = 40
     datasets_config.STREAMING_READ_RETRY_INTERVAL = 10
     download_config = DownloadConfig(max_retries=10)
@@ -240,58 +241,51 @@ def initialize_dataset(
     fast_forward_steps = 0
 
     if data_config.dataset.name == "pico-lm/pretokenized-dolma":
-        # point at your locally downloaded shards
-        cache_root = os.environ.get("HF_DATASETS_CACHE")
-        assert cache_root, "HF_DATASETS_CACHE must point to your local cache"
-
-        data_dir = os.path.join(
-            cache_root, "datasets", "pico-lm", "pretokenized-dolma", "data"
+        cache_root = "/home/dda28/rds/hpc-work/shared_hf_cache"
+        snap_root = os.path.join(
+            cache_root,
+            "pico-lm",
+            "pretokenized-dolma",
+            "datasets--pico-lm--pretokenized-dolma",
+            "snapshots",
         )
-        # find all of the train-xxxxx-of-10000.parquet files
-        all_shards = sorted(glob.glob(os.path.join(data_dir, "train-*-of-*.parquet")))
-        assert all_shards, f"no parquet files found in {data_dir}"
+        # pick the latest commit
+        snapshots = sorted(os.listdir(snap_root))
+        if not snapshots:
+            raise FileNotFoundError(f"No snapshots under {snap_root!r}")
+        latest = snapshots[-1]
 
-        # compute which shard to start from if resuming
+        data_dir = os.path.join(snap_root, latest, "data")
+        pattern = os.path.join(data_dir, "train-*-of-*.parquet")
+        all_shards = sorted(glob.glob(pattern))
+        if not all_shards:
+            raise FileNotFoundError(f"No .parquet files found with pattern {pattern}")
+
+        # compute which shard to start from
         if initial_batch_step and initial_batch_step > 0:
             examples_per_shard = 20_480
-            batches_per_shard = examples_per_shard // data_config.dataloader.batch_size
+            batch_size = data_config.dataloader.batch_size
+            batches_per_shard = examples_per_shard // batch_size
             shard_idx = initial_batch_step // batches_per_shard
             fast_forward_steps = initial_batch_step % batches_per_shard
             data_files = all_shards[shard_idx:]
         else:
             data_files = all_shards
 
-        # load from local parquet files directly, streaming them
-        base_dataset = load_dataset(
+        base_ds = load_dataset(
             "parquet",
             data_files=data_files,
             split="train",
             streaming=True,
             download_config=download_config,
+            cache_dir=cache_root,
+            download_mode=DownloadMode.REUSE_CACHE_IF_EXISTS,
         )
-    else:
-        # fallback to HF download if it’s any other dataset
-        base_dataset = load_dataset(
-            data_config.dataset.name,
-            split="train",
-            streaming=True,
-            download_config=download_config,
-        )
-
-    # wrap in sharding for Fabric if needed
-    if data_config.dataset.name == "pico-lm/pretokenized-dolma":
-        from .data import ShardedIterableDataset
-
-        dataset = ShardedIterableDataset(
-            base_dataset, fabric.global_rank, fabric.world_size
-        )
-    else:
-        dataset = base_dataset
+        dataset = ShardedIterableDataset(base_ds, fabric.global_rank, fabric.world_size)
 
     if return_fast_forward_steps:
         return dataset, fast_forward_steps
-    else:
-        return dataset
+    return dataset
 
 
 def initialize_tokenizer(data_config: DataConfig):
