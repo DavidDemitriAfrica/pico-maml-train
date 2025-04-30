@@ -443,45 +443,42 @@ class Trainer:
                 batch_step % self.configs["checkpointing"].save_every_n_steps == 0
             )
 
-            ########################################################
-            #
-            # Forward Pass
-            #
-            ########################################################
-
+            ################################################################################
+            # Forward Pass (with mutually‐exclusive SMLMT vs autoregressive branches)
+            ################################################################################
             _input_ids = torch.tensor(sub_batch["input_ids"], device=self.fabric.device)
 
-            if self.should_smlmt and random.random() > self.smlmt_hybrid_ratio:
-                # SMLMT: mask a random token in each sequence, predict that token
+            # 1) learning‐dynamics gather (unchanged)
+            if should_store_training_batch:
+                gathered = self.fabric.all_gather(_input_ids)
+                if self.fabric.world_size > 1:
+                    gathered = gathered.reshape(-1, *gathered.shape[2:])
+                training_batch["input_ids"].extend(gathered.tolist())
+
+            # 2) choose branch
+            if self.should_smlmt and random.random() < self.smlmt_hybrid_ratio:
+                # --- SMLMT branch ---
                 B, L = _input_ids.size()
                 mask_ids = _input_ids.clone()
+                # pick one random non‐pad position per sequence
                 pos = torch.randint(1, L - 1, (B,), device=mask_ids.device)
                 true_labels = mask_ids[torch.arange(B), pos].clone()
                 mask_ids[torch.arange(B), pos] = self.tokenizer.mask_token_id
 
                 logits, _ = self.model(mask_ids)  # (B, L, V)
-                # select logits at masked positions
+                # pick out only the masked‐token logits:
                 logits_at_pos = logits[torch.arange(B), pos, :]  # (B, V)
                 loss = F.cross_entropy(logits_at_pos, true_labels)
 
-            input_ids = _input_ids[:, :-1]
-            labels = _input_ids[:, 1:]
-
-            if should_store_training_batch:
-                gathered_input_ids = self.fabric.all_gather(_input_ids)
-
-                # NOTE: On multi-GPU, we need to reshape the input_ids to be a 2D tensor; on
-                # a single GPU, the input_ids are already a 2D tensor.
-                if self.fabric.world_size > 1:
-                    gathered_input_ids = gathered_input_ids.reshape(
-                        -1, *gathered_input_ids.shape[2:]
-                    )
-
-                training_batch["input_ids"].extend(gathered_input_ids.tolist())
-
-            model_output, _ = self.model(input_ids)
-            model_output = model_output.transpose(1, 2)
-
+            else:
+                # --- Autoregressive LM branch ---
+                input_ids = _input_ids[:, :-1]
+                labels = _input_ids[:, 1:]
+                logits, _ = self.model(input_ids)  # (B, T, V)
+                B2, T2, V = logits.shape
+                loss = F.cross_entropy(
+                    logits.view(B2 * T2, V), labels.contiguous().view(-1)
+                )
             ########################################################
             #
             # Gradient accumulation
@@ -495,7 +492,6 @@ class Trainer:
             with self.fabric.no_backward_sync(
                 self.model, enabled=should_accumulate_gradients
             ):
-                loss = F.cross_entropy(model_output, labels)
                 self.fabric.backward(
                     loss
                     / self.configs["training"].optimization.gradient_accumulation_steps,
