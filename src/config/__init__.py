@@ -19,6 +19,7 @@ from .data_config import DataConfig
 from .evaluation_config import EvaluationConfig
 from .model_config import ModelConfig
 from .monitoring_config import MonitoringConfig
+from .smlmt_config import SMLMTConfig
 from .training_config import TrainingConfig
 
 __all__ = [
@@ -28,4 +29,5 @@ __all__ = [
     "ModelConfig",
     "MonitoringConfig",
     "TrainingConfig",
+    "SMLMTConfig",
 ]

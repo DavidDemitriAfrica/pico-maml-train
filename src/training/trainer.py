@@ -16,6 +16,7 @@ pipeline with the features:
 import logging
 import os
 import platform
+import random
 from typing import Any, Dict
 
 import lightning as L
@@ -218,6 +219,19 @@ class Trainer:
                 )
             else:
                 self.learning_dynamics_eval_dataset = None
+
+        ########################################################
+        #
+        # SMLMT flags used during training
+        #
+        ########################################################
+
+        self.should_smlmt = (
+            self.configs["smlmt"].enabled and self.configs["smlmt"].hybrid_ratio > 0.0
+        )
+        self.smlmt_hybrid_ratio = self.configs["smlmt"].hybrid_ratio
+        self.smlmt_min_token_freq = self.configs["smlmt"].min_token_freq
+        self.smlmt_max_token_freq = self.configs["smlmt"].max_token_freq
 
     def train(self) -> None:
         """Execute the main training pipeline.
@@ -436,6 +450,20 @@ class Trainer:
             ########################################################
 
             _input_ids = torch.tensor(sub_batch["input_ids"], device=self.fabric.device)
+
+            if self.should_smlmt and random.random() > self.smlmt_hybrid_ratio:
+                # SMLMT: mask a random token in each sequence, predict that token
+                B, L = _input_ids.size()
+                mask_ids = _input_ids.clone()
+                pos = torch.randint(1, L - 1, (B,), device=mask_ids.device)
+                true_labels = mask_ids[torch.arange(B), pos].clone()
+                mask_ids[torch.arange(B), pos] = self.tokenizer.mask_token_id
+
+                logits, _ = self.model(mask_ids)  # (B, L, V)
+                # select logits at masked positions
+                logits_at_pos = logits[torch.arange(B), pos, :]  # (B, V)
+                loss = F.cross_entropy(logits_at_pos, true_labels)
+
             input_ids = _input_ids[:, :-1]
             labels = _input_ids[:, 1:]
 
@@ -451,7 +479,6 @@ class Trainer:
 
                 training_batch["input_ids"].extend(gathered_input_ids.tolist())
 
-            # Forward pass
             model_output, _ = self.model(input_ids)
             model_output = model_output.transpose(1, 2)
 
