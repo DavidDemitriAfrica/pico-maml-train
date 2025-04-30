@@ -449,7 +449,8 @@ class Trainer:
         """
         # Setup training loop variables
         batch_step = self.initial_batch_step
-
+        # Remove all stale grads
+        self.outer_optimizer.zero_grad()
         # NOTE: these are used to compute the average loss over a training interval.
         # This is more accurate than using the loss at the end of the interval.
         interval_loss = torch.tensor(0.0, device=self.fabric.device)
@@ -545,13 +546,7 @@ class Trainer:
                 logits_q = self.model.classifier_head(hidden_q)[
                     torch.arange(B), pos_q, :
                 ]
-                loss_q = F.cross_entropy(logits_q, query_labels)
-
-                self.fabric.backward(
-                    loss_q
-                    / self.configs["training"].optimization.gradient_accumulation_steps,
-                    model=self.model,
-                )
+                loss = F.cross_entropy(logits_q, query_labels)
 
             else:
                 # --- Autoregressive LM branch ---
