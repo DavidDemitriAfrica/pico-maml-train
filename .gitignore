@@ -169,6 +169,10 @@ data/
 # Checkpoint and Logging Directorries
 runs/
 wandb/
-configs/
 
 .vscode/
+
+# Notes
+*.local
+sbatch*
+*key*
