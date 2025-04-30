@@ -31,4 +31,5 @@ class SMLMTConfig:
     hybrid_ratio: float = 0.6
     min_token_freq: int = 30
     max_token_freq: int = 100
+    inner_steps: int = 10
     classifier_head: ClassifierHeadConfig = field(default_factory=ClassifierHeadConfig)

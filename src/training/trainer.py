@@ -125,6 +125,7 @@ class Trainer:
         self.smlmt_hybrid_ratio = self.configs["smlmt"].hybrid_ratio
         self.smlmt_min_token_freq = self.configs["smlmt"].min_token_freq
         self.smlmt_max_token_freq = self.configs["smlmt"].max_token_freq
+        self.smlmt_inner_steps = self.configs["smlmt"].inner_steps
         if self.should_smlmt:
             head_cfg = self.configs["smlmt"].classifier_head
             layers = []
@@ -481,20 +482,53 @@ class Trainer:
                 training_batch["input_ids"].extend(gathered.tolist())
 
             # 2) choose branch
+            # --- META-INNER LOOP FOR SMLMT ---
             if self.should_smlmt and random.random() < self.smlmt_hybrid_ratio:
-                # --- SMLMT branch ---
+                # 1) snapshot head
+                orig_head = {
+                    k: v.clone()
+                    for k, v in self.model.classifier_head.state_dict().items()
+                }
                 B, L = _input_ids.size()
-                mask_ids = _input_ids.clone()
-                # pick one random non‐pad position per sequence
-                pos = torch.randint(1, L - 1, (B,), device=mask_ids.device)
-                true_labels = mask_ids[torch.arange(B), pos].clone()
-                mask_ids[torch.arange(B), pos] = self.tokenizer.mask_token_id
 
-                logits, _ = self.model(mask_ids)  # (B, L, V)
-                # pick out only the masked‐token logits:
-                logits_at_pos = logits[torch.arange(B), pos, :]  # (B, V)
-                loss = F.cross_entropy(logits_at_pos, true_labels)
+                # 2) sample two mask‐positions per sequence: support & query
+                pos_sup = torch.randint(1, L - 1, (B,), device=_input_ids.device)
+                pos_q = torch.randint(1, L - 1, (B,), device=_input_ids.device)
 
+                support_ids = _input_ids.clone()
+                support_labels = support_ids[torch.arange(B), pos_sup].clone()
+                support_ids[torch.arange(B), pos_sup] = self.tokenizer.mask_token_id
+
+                query_ids = _input_ids.clone()
+                query_labels = query_ids[torch.arange(B), pos_q].clone()
+                query_ids[torch.arange(B), pos_q] = self.tokenizer.mask_token_id
+
+                for _ in range(self.configs["smlmt"].inner_steps):
+                    hidden_sup, _ = self.model(support_ids)  # (B, L, d_model)
+                    logits_sup = self.model.classifier_head(hidden_sup)  # (B, L, V)
+                    logits_sup = logits_sup[torch.arange(B), pos_sup, :]  # (B, V)
+
+                    loss_sup = F.cross_entropy(logits_sup, support_labels)
+                    self.optimizer.zero_grad()
+                    loss_sup.backward()
+                    self.optimizer.step()
+
+                # 4) query evaluation & outer‐loop meta‐gradient
+                hidden_q, _ = self.model(query_ids)  # (B, L, d_model)
+                logits_q = self.model.classifier_head(hidden_q)  # (B, L, V)
+                logits_q = logits_q[torch.arange(B), pos_q, :]  # (B, V)
+
+                loss_q = F.cross_entropy(logits_q, query_labels)
+                self.optimizer.zero_grad()
+                # use Fabric to handle distributed sync/backward
+                self.fabric.backward(loss_q, model=self.model)
+                self.optimizer.step()
+
+                # 5) restore head to its original “initial” state
+                self.model.classifier_head.load_state_dict(orig_head)
+
+                # skip the standard gradient‐accumulation / lm step
+                continue
             else:
                 # --- Autoregressive LM branch ---
                 input_ids = _input_ids[:, :-1]
