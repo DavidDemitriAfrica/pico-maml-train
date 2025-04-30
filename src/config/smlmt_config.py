@@ -32,4 +32,5 @@ class SMLMTConfig:
     min_token_freq: int = 30
     max_token_freq: int = 100
     inner_steps: int = 10
+    inner_lr: float = 0.001
     classifier_head: ClassifierHeadConfig = field(default_factory=ClassifierHeadConfig)

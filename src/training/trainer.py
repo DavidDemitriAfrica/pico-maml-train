@@ -16,7 +16,6 @@ pipeline with the features:
 import logging
 import os
 import platform
-import random
 from typing import Any, Dict
 
 import lightning as L
@@ -45,7 +44,6 @@ from src.training.utils import (
     initialize_logging,
     initialize_lr_scheduler,
     initialize_model,
-    initialize_optimizer,
     initialize_run_dir,
     initialize_tokenizer,
     initialize_wandb,
@@ -104,14 +102,8 @@ class Trainer:
             fabric=self.fabric,
         )
 
-        # Setup Model, Optimizer, and Dataloaders
+        # Setup Model
         self.model = initialize_model(model_config=self.configs["model"])
-        self.optimizer = initialize_optimizer(
-            training_config=self.configs["training"], model=self.model
-        )
-        self.lr_scheduler = initialize_lr_scheduler(
-            training_config=self.configs["training"], optimizer=self.optimizer
-        )
 
         ########################################################
         #
@@ -122,11 +114,12 @@ class Trainer:
         self.should_smlmt = (
             self.configs["smlmt"].enabled and self.configs["smlmt"].hybrid_ratio > 0.0
         )
-        self.smlmt_hybrid_ratio = self.configs["smlmt"].hybrid_ratio
-        self.smlmt_min_token_freq = self.configs["smlmt"].min_token_freq
-        self.smlmt_max_token_freq = self.configs["smlmt"].max_token_freq
-        self.smlmt_inner_steps = self.configs["smlmt"].inner_steps
         if self.should_smlmt:
+            self.smlmt_hybrid_ratio = self.configs["smlmt"].hybrid_ratio
+            self.smlmt_min_token_freq = self.configs["smlmt"].min_token_freq
+            self.smlmt_max_token_freq = self.configs["smlmt"].max_token_freq
+            self.smlmt_inner_steps = self.configs["smlmt"].inner_steps
+            self.smlmt_inner_lr = self.configs["smlmt"].inner_lr
             head_cfg = self.configs["smlmt"].classifier_head
             layers = []
             in_dim = self.model.config.d_model
@@ -145,14 +138,37 @@ class Trainer:
                     if p.dim() > 1:
                         nn.init.xavier_uniform_(p)
 
-        ########################################################
-        #
-        # Finalize model and checkpoint
-        #
-        ########################################################
+        if self.should_smlmt:
+            self.head_params = list(self.model.classifier_head.parameters())
+            self.backbone_params = [
+                p
+                for n, p in self.model.named_parameters()
+                if not n.startswith("classifier_head")
+            ]
+            self.outer_params = self.backbone_params + self.head_params
+            self.inner_optimizer = torch.optim.SGD(
+                self.head_params, lr=self.smlmt_inner_lr
+            )
+        else:
+            self.outer_params = list(self.model.parameters())
 
-        # Wrap model and optimizer with Fabric
-        self.model, self.optimizer = self.fabric.setup(self.model, self.optimizer)
+        self.outer_optimizer = torch.optim.AdamW(
+            self.outer_params, lr=self.configs["training"].optimization.lr
+        )
+
+        if self.should_smlmt:
+            self.model, self.outer_optimizer, self.inner_optimizer = self.fabric.setup(
+                self.model, self.outer_optimizer, self.inner_optimizer
+            )
+        else:
+            self.model, self.outer_optimizer = self.fabric.setup(
+                self.model, self.outer_optimizer
+            )
+
+        # single scheduler on the outer:
+        self.lr_scheduler = initialize_lr_scheduler(
+            self.configs["training"], self.outer_optimizer
+        )
 
         # Setup HuggingFace Checkpointing
         if self.configs["checkpointing"].save_to_hf:
@@ -175,14 +191,14 @@ class Trainer:
                 checkpoint_step="latest",
                 fabric=self.fabric,
                 model=self.model,
-                optimizer=self.optimizer,
+                optimizer=self.outer_optimizer,
                 lr_scheduler=self.lr_scheduler,
             )
 
             if resume_checkpoint:
                 (
                     self.model,
-                    self.optimizer,
+                    self.outer_optimizer,
                     self.lr_scheduler,
                     self.initial_batch_step,
                 ) = resume_checkpoint
@@ -284,7 +300,7 @@ class Trainer:
             checkpoint_step=self.initial_batch_step,
             fabric=self.fabric,
             model=self.model,
-            optimizer=self.optimizer,
+            optimizer=self.outer_optimizer,
             lr_scheduler=self.lr_scheduler,
             tokenizer=self.tokenizer,
         )
@@ -375,7 +391,7 @@ class Trainer:
                 checkpoint_step=final_step,
                 fabric=self.fabric,
                 model=self.model,
-                optimizer=self.optimizer,
+                optimizer=self.outer_optimizer,
                 lr_scheduler=self.lr_scheduler,
                 tokenizer=self.tokenizer,
             )
@@ -481,9 +497,11 @@ class Trainer:
                     gathered = gathered.reshape(-1, *gathered.shape[2:])
                 training_batch["input_ids"].extend(gathered.tolist())
 
-            # 2) choose branch
-            # --- META-INNER LOOP FOR SMLMT ---
-            if self.should_smlmt and random.random() < self.smlmt_hybrid_ratio:
+            # 2) choose branch *synchronously* across all ranks
+            rand_val = torch.rand(1, device=self.fabric.device)
+            rand_val = self.fabric.broadcast(rand_val, src=0)
+            do_meta = self.should_smlmt and (rand_val.item() < self.smlmt_hybrid_ratio)
+            if do_meta:
                 # 1) snapshot head
                 orig_head = {
                     k: v.clone()
@@ -503,32 +521,38 @@ class Trainer:
                 query_labels = query_ids[torch.arange(B), pos_q].clone()
                 query_ids[torch.arange(B), pos_q] = self.tokenizer.mask_token_id
 
-                for _ in range(self.configs["smlmt"].inner_steps):
-                    hidden_sup, _ = self.model(support_ids)  # (B, L, d_model)
-                    logits_sup = self.model.classifier_head(hidden_sup)  # (B, L, V)
-                    logits_sup = logits_sup[torch.arange(B), pos_sup, :]  # (B, V)
+                for _ in range(self.smlmt_inner_steps):
+                    for p in self.backbone_params:
+                        p.requires_grad_(False)
+                    # zero grad on _inner_ optimizer up front
+                    self.inner_optimizer.zero_grad()
+                    # freeze transformer weights
+                    with self.fabric.no_backward_sync(self.model):
+                        hidden_sup, _ = self.model(support_ids)
+                        logits_sup = self.model.classifier_head(hidden_sup)
+                        logits_sup = logits_sup[torch.arange(B), pos_sup, :]
 
-                    loss_sup = F.cross_entropy(logits_sup, support_labels)
-                    self.optimizer.zero_grad()
-                    loss_sup.backward()
-                    self.optimizer.step()
-
-                # 4) query evaluation & outer‐loop meta‐gradient
-                hidden_q, _ = self.model(query_ids)  # (B, L, d_model)
-                logits_q = self.model.classifier_head(hidden_q)  # (B, L, V)
-                logits_q = logits_q[torch.arange(B), pos_q, :]  # (B, V)
-
-                loss_q = F.cross_entropy(logits_q, query_labels)
-                self.optimizer.zero_grad()
-                # use Fabric to handle distributed sync/backward
-                self.fabric.backward(loss_q, model=self.model)
-                self.optimizer.step()
-
+                        loss_sup = F.cross_entropy(logits_sup, support_labels)
+                        # use Fabric so on multi‐GPU we sync grads if desired
+                        self.fabric.backward(loss_sup, model=self.model)
+                    self.inner_optimizer.step()
+                    for p in self.backbone_params:
+                        p.requires_grad_(True)
                 # 5) restore head to its original “initial” state
                 self.model.classifier_head.load_state_dict(orig_head)
 
-                # skip the standard gradient‐accumulation / lm step
-                continue
+                hidden_q, _ = self.model(query_ids)
+                logits_q = self.model.classifier_head(hidden_q)[
+                    torch.arange(B), pos_q, :
+                ]
+                loss_q = F.cross_entropy(logits_q, query_labels)
+
+                self.fabric.backward(
+                    loss_q
+                    / self.configs["training"].optimization.gradient_accumulation_steps,
+                    model=self.model,
+                )
+
             else:
                 # --- Autoregressive LM branch ---
                 input_ids = _input_ids[:, :-1]
@@ -562,10 +586,6 @@ class Trainer:
                 else:
                     interval_loss += loss.item()
                     interval_steps += 1
-
-            # NOTE: if we are not accumulating gradients, we should skip the logging and optimization steps
-            if should_accumulate_gradients:
-                continue
 
             ########################################################
             #
@@ -641,9 +661,11 @@ class Trainer:
             #
             ########################################################
 
-            self.optimizer.step()
-            self.optimizer.zero_grad()
-            self.lr_scheduler.step()
+            # only step once per full (accumulation) batch
+            if not should_accumulate_gradients:
+                self.outer_optimizer.step()
+                self.lr_scheduler.step()
+                self.outer_optimizer.zero_grad()
 
             batch_step += 1
 
@@ -660,7 +682,7 @@ class Trainer:
                     checkpoint_step=batch_step,
                     fabric=self.fabric,
                     model=self.model,
-                    optimizer=self.optimizer,
+                    optimizer=self.outer_optimizer,
                     lr_scheduler=self.lr_scheduler,
                     tokenizer=self.tokenizer,
                 )
