@@ -22,6 +22,7 @@ from typing import Any, Dict
 import lightning as L
 import psutil
 import torch
+import torch.nn as nn
 import torch.nn.functional as F
 import yaml
 from datasets import Dataset, load_dataset
@@ -114,6 +115,37 @@ class Trainer:
 
         # Wrap model and optimizer with Fabric
         self.model, self.optimizer = self.fabric.setup(self.model, self.optimizer)
+
+        ########################################################
+        #
+        # SMLMT flags used during training
+        #
+        ########################################################
+
+        self.should_smlmt = (
+            self.configs["smlmt"].enabled and self.configs["smlmt"].hybrid_ratio > 0.0
+        )
+        self.smlmt_hybrid_ratio = self.configs["smlmt"].hybrid_ratio
+        self.smlmt_min_token_freq = self.configs["smlmt"].min_token_freq
+        self.smlmt_max_token_freq = self.configs["smlmt"].max_token_freq
+        if self.should_smlmt:
+            head_cfg = self.configs["smlmt"].classifier_head
+            layers = []
+            in_dim = self.model.config.d_model
+            for _ in range(head_cfg.num_layers - 1):
+                layers += [
+                    nn.Linear(in_dim, head_cfg.hidden_dim),
+                    nn.ReLU(),
+                    nn.Dropout(head_cfg.dropout),
+                ]
+                in_dim = head_cfg.hidden_dim
+            # final projection to vocab-size (for token prediction)
+            layers.append(nn.Linear(in_dim, self.model.config.vocab_size))
+            self.model.classifier_head = nn.Sequential(*layers)
+            if head_cfg.init_method == "xavier":
+                for p in self.model.classifier_head.parameters():
+                    if p.dim() > 1:
+                        nn.init.xavier_uniform_(p)
 
         # Setup HuggingFace Checkpointing
         if self.configs["checkpointing"].save_to_hf:
@@ -219,19 +251,6 @@ class Trainer:
                 )
             else:
                 self.learning_dynamics_eval_dataset = None
-
-        ########################################################
-        #
-        # SMLMT flags used during training
-        #
-        ########################################################
-
-        self.should_smlmt = (
-            self.configs["smlmt"].enabled and self.configs["smlmt"].hybrid_ratio > 0.0
-        )
-        self.smlmt_hybrid_ratio = self.configs["smlmt"].hybrid_ratio
-        self.smlmt_min_token_freq = self.configs["smlmt"].min_token_freq
-        self.smlmt_max_token_freq = self.configs["smlmt"].max_token_freq
 
     def train(self) -> None:
         """Execute the main training pipeline.
