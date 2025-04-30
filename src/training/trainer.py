@@ -664,39 +664,50 @@ class Trainer:
         Gathers together the training metrics computed across all processes in distributed training
         and logs them in a tree-style format.
         """
-        gathered_interval_loss = self.fabric.all_reduce(
-            interval_loss, reduce_op="sum"
-        ).item()
-        gathered_interval_inf_or_nan_count = self.fabric.all_reduce(
+        # ---- aggregate scalars ----
+        total_loss = self.fabric.all_reduce(interval_loss, reduce_op="sum").item()
+        total_inf_nan = self.fabric.all_reduce(
             interval_inf_or_nan_count, reduce_op="sum"
         ).item()
-        gathered_interval_steps = self.fabric.all_reduce(
-            interval_steps, reduce_op="sum"
-        ).item()
+        total_steps = self.fabric.all_reduce(interval_steps, reduce_op="sum").item()
+        avg_loss = total_loss / total_steps if total_steps > 0 else float("inf")
+        lr = self.lr_scheduler.get_last_lr()[0]
 
-        avg_loss = (
-            gathered_interval_loss / gathered_interval_steps
-            if gathered_interval_steps > 0
-            else float("inf")
-        )
-
+        # ---- log to tensorboard/wandb ----
         self.fabric.log("train/loss", avg_loss, step=batch_step)
-        self.fabric.log(
-            "trainer/inf_or_nan_count",
-            gathered_interval_inf_or_nan_count,
-            step=batch_step,
-        )
-        self.fabric.log(
-            "trainer/learning_rate",
-            self.lr_scheduler.get_last_lr()[0],
-            step=batch_step,
-        )
+        self.fabric.log("trainer/inf_or_nan_count", total_inf_nan, step=batch_step)
+        self.fabric.log("trainer/learning_rate", lr, step=batch_step)
 
-        # Log to console in tree format
+        # ---- optionally log head stats ----
+        if self.configs["smlmt"].enabled:
+            # gather all head parameters
+            head_params = list(self.model.classifier_head.parameters())
+            # weight vector
+            all_w = torch.cat([p.detach().view(-1) for p in head_params])
+            w_mean, w_std = all_w.mean().item(), all_w.std().item()
+            # gradient norm
+            grads = [p.grad for p in head_params if p.grad is not None]
+            grad_norm = (
+                torch.norm(torch.stack([g.norm() for g in grads])).item()
+                if grads
+                else 0.0
+            )
+
+            self.fabric.log("head/weight_mean", w_mean, step=batch_step)
+            self.fabric.log("head/weight_std", w_std, step=batch_step)
+            self.fabric.log("head/grad_norm", grad_norm, step=batch_step)
+
+        # ---- console output ----
         self.log(f"Step {batch_step} -- 🔄 Training Metrics")
-        self.log(f"├── Loss: {avg_loss:.4f}")
-        self.log(f"├── Learning Rate: {self.lr_scheduler.get_last_lr()[0]:.2e}")
-        self.log(f"└── Inf/NaN count: {gathered_interval_inf_or_nan_count}")
+        self.log(f"├── Loss:           {avg_loss:.4f}")
+        self.log(f"├── Learning Rate:  {lr:.2e}")
+        self.log(f"└── Inf/NaN count:  {total_inf_nan}")
+
+        if self.configs["smlmt"].enabled:
+            self.log("    └── Classifier Head:")
+            self.log(f"         ├── weight_mean: {w_mean:.4f}")
+            self.log(f"         ├── weight_std:  {w_std:.4f}")
+            self.log(f"         └── grad_norm:   {grad_norm:.4f}")
 
     def _log_evaluation_results(
         self, evaluation_results: Dict[str, Any], batch_step: int
