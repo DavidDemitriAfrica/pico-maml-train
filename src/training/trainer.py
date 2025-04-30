@@ -113,9 +113,6 @@ class Trainer:
             training_config=self.configs["training"], optimizer=self.optimizer
         )
 
-        # Wrap model and optimizer with Fabric
-        self.model, self.optimizer = self.fabric.setup(self.model, self.optimizer)
-
         ########################################################
         #
         # SMLMT flags used during training
@@ -146,6 +143,15 @@ class Trainer:
                 for p in self.model.classifier_head.parameters():
                     if p.dim() > 1:
                         nn.init.xavier_uniform_(p)
+
+        ########################################################
+        #
+        # Finalize model and checkpoint
+        #
+        ########################################################
+
+        # Wrap model and optimizer with Fabric
+        self.model, self.optimizer = self.fabric.setup(self.model, self.optimizer)
 
         # Setup HuggingFace Checkpointing
         if self.configs["checkpointing"].save_to_hf:
