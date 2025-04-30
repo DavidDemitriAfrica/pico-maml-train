@@ -1,6 +1,18 @@
 # src/config/smlmt.py
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+
+
+@dataclass
+class ClassifierHeadConfig:
+    # hidden size of the MLP head
+    hidden_dim: int = 256
+    # dropout between layers
+    dropout: float = 0.1
+    # how many layers (not counting final projection)
+    num_layers: int = 2
+    # initialization for all head weights
+    init_method: str = "xavier"
 
 
 @dataclass
@@ -19,3 +31,4 @@ class SMLMTConfig:
     hybrid_ratio: float = 0.6
     min_token_freq: int = 30
     max_token_freq: int = 100
+    classifier_head: ClassifierHeadConfig = field(default_factory=ClassifierHeadConfig)
