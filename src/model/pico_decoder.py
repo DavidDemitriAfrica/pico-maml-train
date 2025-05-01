@@ -443,14 +443,21 @@ class PicoDecoder(nn.Module):
 
     def convert_to_hf_model(self) -> "PicoDecoderHF":
         """Convert the Lightning model to a HuggingFace model."""
-        # Create HF config without fabric-specific settings
+        # Build HF config
         hf_config = PicoDecoderHFConfig.from_dataclass(self.config)
 
-        # Create new HF model
+        # Instantiate the HF-wrapped model
         hf_model = PicoDecoderHF(hf_config)
 
-        # Copy state dict, excluding fabric-specific keys
-        hf_model.load_state_dict(self.state_dict(prefix="pico_decoder."))
+        # Grab our full state dict, prefixing module names
+        raw_state = self.state_dict(prefix="pico_decoder.")
+
+        # Only keep keys that exist in the HF model (drops classifier_head, etc.)
+        hf_keys = set(hf_model.state_dict().keys())
+        filtered_state = {k: v for k, v in raw_state.items() if k in hf_keys}
+
+        # Load into HF model, ignore any missing keys
+        hf_model.load_state_dict(filtered_state, strict=False)
 
         return hf_model
 
