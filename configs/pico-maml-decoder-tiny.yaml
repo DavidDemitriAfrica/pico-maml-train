@@ -51,9 +51,6 @@ data:
     name: "pico-lm/pretokenized-dolma"
     split: "train"
     cache_dir: "/home/dda28/rds/hpc-work/shared_hf_cache/pico-lm/pretokenized-dolma"
-  dataloader:
-    batch_size: 64
-    num_workers: 4
 
 evaluation:
   paloma:
