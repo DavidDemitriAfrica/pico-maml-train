@@ -201,7 +201,10 @@ class Trainer:
                     self.outer_optimizer,
                     self.lr_scheduler,
                     self.initial_batch_step,
+                    inner_opt_state,
                 ) = resume_checkpoint
+                if self.should_smlmt and inner_opt_state is not None:
+                    self.inner_optimizer.load_state_dict(inner_opt_state)
             else:
                 self.initial_batch_step = 0
         else:
@@ -227,7 +230,7 @@ class Trainer:
             dataset=self.train_dataset,
         )
         self.train_dataloader = self.fabric.setup_dataloaders(
-            self.train_dataloader, use_distributed_sampler=False
+            self.train_dataloader, use_distributed_sampler=True
         )
 
         self.tokenizer = initialize_tokenizer(data_config=self.configs["data"])
@@ -539,15 +542,15 @@ class Trainer:
                     self.inner_optimizer.step()
                     for p in self.backbone_params:
                         p.requires_grad_(True)
-                # 5) restore head to its original “initial” state
-                self.model.classifier_head.load_state_dict(orig_head)
+                # 5) compute query loss on the *adapted* head
 
                 hidden_q, _ = self.model(query_ids)
                 logits_q = self.model.classifier_head(hidden_q)[
                     torch.arange(B), pos_q, :
                 ]
                 loss = F.cross_entropy(logits_q, query_labels)
-
+                # 6) restore head to its original “initial” state
+                self.model.classifier_head.load_state_dict(orig_head)
             else:
                 # --- Autoregressive LM branch ---
                 input_ids = _input_ids[:, :-1]
@@ -661,8 +664,7 @@ class Trainer:
                 self.outer_optimizer.step()
                 self.lr_scheduler.step()
                 self.outer_optimizer.zero_grad()
-
-            batch_step += 1
+                batch_step += 1
 
             ########################################################
             #
@@ -680,6 +682,7 @@ class Trainer:
                     optimizer=self.outer_optimizer,
                     lr_scheduler=self.lr_scheduler,
                     tokenizer=self.tokenizer,
+                    inner_optimizer=self.inner_optimizer if self.should_smlmt else None,
                 )
 
                 if self.should_evaluate:

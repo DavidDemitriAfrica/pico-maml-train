@@ -58,7 +58,7 @@ class LearningDynamicsCheckpointingConfig:
 @dataclass
 class HuggingFaceCheckpointingConfig:
     # Should be in the format of <(username or organization name)>/<repo_name>, e.g. pico-lm/demo
-    repo_id: str = ""
+    repo_id: str = "davidafrica/pico-maml"
 
     # HuggingFace Collection Slug (specifies a tag for the run)
     collection_slug: Optional[str] = None
