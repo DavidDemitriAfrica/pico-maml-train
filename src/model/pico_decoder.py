@@ -307,20 +307,14 @@ class Attention(nn.Module):
             values = values.repeat_interleave(self.n_rep, dim=-3)
             apply_gqa = False
 
-        backends = [
-            SDPBackend.FLASH_ATTENTION,
-            SDPBackend.CUDNN_ATTENTION,
-            SDPBackend.MATH,
-        ]
+        backends = [SDPBackend.CUDNN_ATTENTION, SDPBackend.MATH]
 
         with sdpa_kernel(backends=backends):
             attn_output = F.scaled_dot_product_attention(
                 queries.contiguous(),
                 keys.contiguous(),
                 values.contiguous(),
-                attn_mask=None,
-                dropout_p=0.0,
-                is_causal=True,
+                attn_mask=mask.to(queries.dtype),
                 enable_gqa=apply_gqa,
             )
 
