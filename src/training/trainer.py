@@ -521,12 +521,17 @@ class Trainer:
                 pos_q = torch.randint(1, L - 1, (B,), device=_input_ids.device)
 
                 support_ids = _input_ids.clone()
+                mask_id = self.tokenizer.mask_token_id
+                if mask_id is None:
+                    # e.g. use pad_token_id or eos_token_id
+                    mask_id = self.tokenizer.pad_token_id or self.tokenizer.eos_token_id
+
                 support_labels = support_ids[torch.arange(B), pos_sup].clone()
-                support_ids[torch.arange(B), pos_sup] = self.tokenizer.mask_token_id
+                support_ids[torch.arange(B), pos_sup] = mask_id
 
                 query_ids = _input_ids.clone()
                 query_labels = query_ids[torch.arange(B), pos_q].clone()
-                query_ids[torch.arange(B), pos_q] = self.tokenizer.mask_token_id
+                query_ids[torch.arange(B), pos_q] = mask_id
 
                 for _ in range(self.smlmt_inner_steps):
                     for p in self.backbone_params:
