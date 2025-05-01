@@ -27,7 +27,7 @@ training:
     gradient_checkpointing: true
 
   fabric:
-    precision: "bf16"
+    precision: "bf16-mixed"
     devices: 4              # use 4 GPUs on this node
     num_nodes: 1
 
@@ -50,7 +50,7 @@ data:
     split: "train"
     # no cache_dir so HF will stream into ephemeral storage
   dataloader:
-    batch_size: 8         # 256 is the default, but we can override it here
+    batch_size: 64         # 256 is the default, but we can override it here
 
 evaluation:
   paloma:

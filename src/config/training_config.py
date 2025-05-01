@@ -13,7 +13,7 @@ from ._constants import GRADIENT_ACCUMULATION_STEPS
 class FabricConfig:
     # Configure nodes/devices for parallelised training
     num_nodes: int = 1
-    num_devices: int = 1
+    num_devices: int = 4
     precision: str = "bf16-mixed"
     # Hardware accelerator to use, can be cpu/cuda/mps etc.
     accelerator: str = "cuda"
