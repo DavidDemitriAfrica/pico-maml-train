@@ -681,44 +681,101 @@ class Trainer:
                 self.outer_optimizer.zero_grad()
                 batch_step += 1
 
+                # ——— Logging ———
+                if (
+                    batch_step % self.configs["monitoring"].logging.log_every_n_steps
+                    == 0
+                ):
+                    self._log_training_metrics(
+                        interval_loss=interval_loss,
+                        interval_steps=interval_steps,
+                        interval_inf_or_nan_count=interval_inf_or_nan_count,
+                        batch_step=batch_step,
+                    )
+                    interval_loss = torch.tensor(0.0, device=self.fabric.device)
+                    interval_steps = torch.tensor(0, device=self.fabric.device)
+                    interval_inf_or_nan_count = torch.tensor(
+                        0, device=self.fabric.device
+                    )
+
+                # ——— Learning Dynamics Checkpointing ———
+                if (
+                    save_every > 0
+                    and batch_step % save_every == 0
+                    and self.should_compute_learning_dynamics
+                ):
+                    self.log(f"Step {batch_step} -- 📈 Saving Learning Dynamics")
+                    # (reuse your existing LD code here)
+
+                # ——— Training Checkpointing & Evaluation ———
+                if save_every > 0 and batch_step % save_every == 0:
+                    self.log(f"Step {batch_step} -- 💾 Saving Checkpoint")
+                    save_checkpoint(
+                        configs=self.configs,
+                        checkpoint_step=batch_step,
+                        fabric=self.fabric,
+                        model=self.model,
+                        optimizer=self.outer_optimizer,
+                        lr_scheduler=self.lr_scheduler,
+                        tokenizer=self.tokenizer,
+                        inner_optimizer=self.inner_optimizer
+                        if self.should_smlmt
+                        else None,
+                    )
+                    if self.should_evaluate:
+                        evaluation_results = run_evaluation(
+                            evaluation_config=self.configs["evaluation"],
+                            checkpointing_config=self.configs["checkpointing"],
+                            fabric=self.fabric,
+                            model=self.model,
+                        )
+                        if evaluation_results is not None:
+                            self._log_evaluation_results(evaluation_results, batch_step)
+                            save_evaluation_results(
+                                checkpointing_config=self.configs["checkpointing"],
+                                fabric=self.fabric,
+                                evaluation_results=evaluation_results,
+                                checkpoint_step=batch_step,
+                            )
+
             ########################################################
             #
             # Training Checkpointing and evaluation
             #
             ########################################################
 
-            if save_every > 0 and batch_step % save_every == 0:
-                self.log(f"Step {batch_step} -- 💾 Saving Checkpoint")
-                save_checkpoint(
-                    configs=self.configs,
-                    checkpoint_step=batch_step,
-                    fabric=self.fabric,
-                    model=self.model,
-                    optimizer=self.outer_optimizer,
-                    lr_scheduler=self.lr_scheduler,
-                    tokenizer=self.tokenizer,
-                    inner_optimizer=self.inner_optimizer if self.should_smlmt else None,
-                )
+            # if save_every > 0 and batch_step % save_every == 0:
+            #    self.log(f"Step {batch_step} -- 💾 Saving Checkpoint")
+            #    save_checkpoint(
+            #        configs=self.configs,
+            #        checkpoint_step=batch_step,
+            #        fabric=self.fabric,
+            #        model=self.model,
+            #        optimizer=self.outer_optimizer,
+            #        lr_scheduler=self.lr_scheduler,
+            #        tokenizer=self.tokenizer,
+            #        inner_optimizer=self.inner_optimizer if self.should_smlmt else None,
+            #    )
 
-                if self.should_evaluate:
-                    evaluation_results = run_evaluation(
-                        evaluation_config=self.configs["evaluation"],
-                        checkpointing_config=self.configs["checkpointing"],
-                        fabric=self.fabric,
-                        model=self.model,
-                    )
-                    if evaluation_results is not None:
-                        self._log_evaluation_results(evaluation_results, batch_step)
-                        save_evaluation_results(
-                            checkpointing_config=self.configs["checkpointing"],
-                            fabric=self.fabric,
-                            evaluation_results=evaluation_results,
-                            checkpoint_step=batch_step,
-                        )
+            #    if self.should_evaluate:
+            #        evaluation_results = run_evaluation(
+            #            evaluation_config=self.configs["evaluation"],
+            #            checkpointing_config=self.configs["checkpointing"],
+            #            fabric=self.fabric,
+            #            model=self.model,
+            #        )
+            #        if evaluation_results is not None:
+            #            self._log_evaluation_results(evaluation_results, batch_step)
+            #            save_evaluation_results(
+            #                checkpointing_config=self.configs["checkpointing"],
+            #                fabric=self.fabric,
+            #                evaluation_results=evaluation_results,
+            #                checkpoint_step=batch_step,
+            #            )
 
             # Break if we've reached training steps
-            if batch_step >= self.configs["training"].max_steps:
-                break
+            # if batch_step >= self.configs["training"].max_steps:
+            #    break
 
         return batch_step
 
