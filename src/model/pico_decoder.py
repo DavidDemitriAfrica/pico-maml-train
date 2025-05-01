@@ -466,6 +466,7 @@ class PicoDecoder(nn.Module):
         input_ids: torch.Tensor,
         past_key_values: Optional[Tuple[Tuple[torch.Tensor]]] = None,
         use_cache: bool = False,
+        return_hidden: bool = False,
     ) -> Tuple[torch.Tensor, Optional[Tuple[Tuple[torch.Tensor, torch.Tensor]]]]:
         """
         This is the forward pass for the entire Pico model. It boils down to:
@@ -522,6 +523,10 @@ class PicoDecoder(nn.Module):
 
         # Final norm and projection
         h = self.output_norm(h)
+
+        if return_hidden:
+            return h, cached_key_values
+
         logits = self.de_embedding_proj(h).float()
 
         return logits, cached_key_values
