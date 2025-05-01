@@ -244,7 +244,6 @@ class Attention(nn.Module):
     def forward(
         self,
         input: torch.Tensor,
-        mask: Optional[torch.Tensor] = None,
         past_key_values: Optional[Tuple[torch.Tensor, ...]] = None,
         use_cache: bool = False,
     ) -> Tuple[torch.Tensor, Optional[Tuple[torch.Tensor, torch.Tensor]]]:
@@ -307,14 +306,20 @@ class Attention(nn.Module):
             values = values.repeat_interleave(self.n_rep, dim=-3)
             apply_gqa = False
 
-        backends = [SDPBackend.CUDNN_ATTENTION, SDPBackend.MATH]
+        backends = [
+            SDPBackend.FLASH_ATTENTION,
+            SDPBackend.CUDNN_ATTENTION,
+            SDPBackend.MATH,
+        ]
 
         with sdpa_kernel(backends=backends):
             attn_output = F.scaled_dot_product_attention(
                 queries.contiguous(),
                 keys.contiguous(),
                 values.contiguous(),
-                attn_mask=mask.to(queries.dtype),
+                attn_mask=None,
+                dropout_p=0.0,
+                is_causal=True,
                 enable_gqa=apply_gqa,
             )
 
