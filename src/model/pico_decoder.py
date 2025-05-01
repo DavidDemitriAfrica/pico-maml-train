@@ -244,6 +244,7 @@ class Attention(nn.Module):
     def forward(
         self,
         input: torch.Tensor,
+        mask: Optional[torch.Tensor] = None,
         past_key_values: Optional[Tuple[torch.Tensor, ...]] = None,
         use_cache: bool = False,
     ) -> Tuple[torch.Tensor, Optional[Tuple[torch.Tensor, torch.Tensor]]]:
