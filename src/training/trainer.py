@@ -76,6 +76,11 @@ class Trainer:
         # Setup Config
         self.configs = initialize_configuration(config_path)
 
+        # ——— Reset RoPE’s one‐time frequency table so it's rebuilt with our max_seq_len ———
+        from src.model.pico_decoder import RoPE
+
+        RoPE._freqs_cis_tensor = None
+
         # Setup Run Directory (i.e. where we store checkpoints, logs, etc.)
         initialize_run_dir(checkpointing_config=self.configs["checkpointing"])
 
