@@ -675,11 +675,11 @@ class Trainer:
             ########################################################
 
             # only step once per full (accumulation) batch
-            # if not should_accumulate_gradients:
-            #    self.outer_optimizer.step()
-            #    self.lr_scheduler.step()
-            #    self.outer_optimizer.zero_grad()
-            #    batch_step += 1
+            if not should_accumulate_gradients:
+                self.outer_optimizer.step()
+                self.lr_scheduler.step()
+                self.outer_optimizer.zero_grad()
+                batch_step += 1
 
             ########################################################
             #
