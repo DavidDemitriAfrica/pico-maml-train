@@ -5,7 +5,7 @@ checkpointing:
   run_name: "pico-maml-decoder-tiny-runpod-7"
   save_to_hf: false         # no pushes to HuggingFace
   auto_resume: false        # don’t try to resume from disk
-  save_every_n_steps: 10     # never checkpoint
+  save_every_n_steps: 100     # never checkpoint
   learning_dynamics:
     layer_suffixes: []      # disable LD collection entirely
 
