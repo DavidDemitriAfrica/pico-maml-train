@@ -31,7 +31,7 @@ training:
     num_nodes: 1
 
 smlmt:
-  enabled: true
+  enabled: false
   hybrid_ratio: 0.5
   inner_steps: 10
   inner_lr: 0.01
