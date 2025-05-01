@@ -387,7 +387,8 @@ class Trainer:
                 )
 
         # Handle checkpointing and final evaluation
-        if final_step % self.configs["checkpointing"].save_every_n_steps != 0:
+        save_every = self.configs["checkpointing"].save_every_n_steps
+        if save_every > 0 and final_step % save_every != 0:
             self.log(f"Step {final_step} -- 💾 Saving Final Checkpoint")
             save_checkpoint(
                 configs=self.configs,
@@ -452,6 +453,8 @@ class Trainer:
         """
         # Setup training loop variables
         batch_step = self.initial_batch_step
+        # Guard against zero checkpoint interval
+        save_every = self.configs["checkpointing"].save_every_n_steps
         # Remove all stale grads
         self.outer_optimizer.zero_grad()
         # NOTE: these are used to compute the average loss over a training interval.
@@ -591,7 +594,7 @@ class Trainer:
             #
             ########################################################
 
-            if batch_step % self.configs["monitoring"].logging.log_every_n_steps == 0:
+            if save_every > 0 and batch_step % save_every == 0:
                 self._log_training_metrics(
                     interval_loss=interval_loss,
                     interval_steps=interval_steps,
@@ -608,7 +611,7 @@ class Trainer:
             #
             ########################################################
 
-            if batch_step % self.configs["checkpointing"].save_every_n_steps == 0:
+            if save_every > 0 and batch_step % save_every == 0:
                 if self.should_compute_learning_dynamics:
                     self.log(f"Step {batch_step} -- 📈 Saving Learning Dynamics")
 
@@ -672,7 +675,7 @@ class Trainer:
             #
             ########################################################
 
-            if batch_step % self.configs["checkpointing"].save_every_n_steps == 0:
+            if save_every > 0 and batch_step % save_every == 0:
                 self.log(f"Step {batch_step} -- 💾 Saving Checkpoint")
                 save_checkpoint(
                     configs=self.configs,
