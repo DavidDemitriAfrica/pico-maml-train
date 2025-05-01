@@ -33,6 +33,7 @@ def load_checkpoint(
     model: nn.Module,
     optimizer: Optimizer,
     lr_scheduler: LRScheduler,
+    inner_optimizer: Optimizer = None,
 ) -> Tuple[nn.Module, Optimizer, LRScheduler, int]:
     """Load model checkpoint and associated states from a given step.
 
@@ -81,6 +82,9 @@ def load_checkpoint(
         # Deepspeed checkpoints create sub-directory with distributed checkpoint file
         fabric_load_file = fabric_checkpoint_path
 
+    if inner_optimizer is not None:
+        checkpoint_state["_inner_optimizer"] = inner_optimizer.state_dict()
+
     extra_state = fabric.load(os.path.join(fabric_load_file), state=checkpoint_state)
 
     # NOTE: extra_state will contain any additional states that were saved in the checkpoint
@@ -90,7 +94,9 @@ def load_checkpoint(
         _rng_states = extra_state["_rng_states"]
         _set_rng_states(_rng_states)
 
-    return model, optimizer, lr_scheduler, checkpoint_step
+    inner_opt_state = extra_state.get("_inner_optimizer", None)
+
+    return model, optimizer, lr_scheduler, checkpoint_step, inner_opt_state
 
 
 @use_backoff()
@@ -103,6 +109,7 @@ def save_checkpoint(
     lr_scheduler: LRScheduler,
     tokenizer: PreTrainedTokenizerBase,
     upload_logs: bool = False,
+    inner_optimizer: Optimizer = None,  # Optional inner optimizer for MAML
 ) -> None:
     """Save training checkpoint and associated states to disk and optionally to HuggingFace Hub.
 
@@ -203,6 +210,9 @@ def save_checkpoint(
     else:
         # Deepspeed checkpoints create sub-directory with distributed checkpoint file
         fabric_save_file = fabric_checkpoint_path
+
+    if inner_optimizer is not None:
+        checkpoint_state["_inner_optimizer"] = inner_optimizer.state_dict()
 
     fabric.save(fabric_save_file, checkpoint_state)
 
