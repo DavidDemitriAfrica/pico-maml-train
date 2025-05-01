@@ -83,7 +83,7 @@ def load_checkpoint(
         fabric_load_file = fabric_checkpoint_path
 
     if inner_optimizer is not None:
-        checkpoint_state["_inner_optimizer"] = inner_optimizer.state_dict()
+        checkpoint_state["_inner_optimizer"] = inner_optimizer
 
     extra_state = fabric.load(os.path.join(fabric_load_file), state=checkpoint_state)
 
@@ -94,6 +94,7 @@ def load_checkpoint(
         _rng_states = extra_state["_rng_states"]
         _set_rng_states(_rng_states)
 
+    # raw state dict for inner optimizer
     inner_opt_state = extra_state.get("_inner_optimizer", None)
 
     return model, optimizer, lr_scheduler, checkpoint_step, inner_opt_state
