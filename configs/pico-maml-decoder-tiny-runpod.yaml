@@ -11,8 +11,8 @@ checkpointing:
 
 model:
   # tiny decoder
-  d_model: 96
-  activation_hidden_dim: 384
+  d_model: 24
+  activation_hidden_dim: 96
   max_seq_len: 2048 
 
 monitoring:
