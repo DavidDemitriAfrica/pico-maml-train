@@ -158,18 +158,24 @@ class Trainer:
             self.outer_params = list(self.model.parameters())
 
         # 1) build outer optimizer and scheduler up front
-        self.outer_optimizer = torch.optim.AdamW(
+        raw_outer_opt = torch.optim.AdamW(
             self.outer_params, lr=self.configs["training"].optimization.lr
         )
 
         # 3) wrap *only* model + outer optimizer  with Fabric
-        self.model, self.outer_optimizer = self.fabric.setup(
-            self.model, self.outer_optimizer
+        self.model, wrapped_outer_opt = self.fabric.setup(self.model, raw_outer_opt)
+
+        outer_opt_for_sched = (
+            wrapped_outer_opt.optimizer
+            if hasattr(wrapped_outer_opt, "optimizer")
+            else wrapped_outer_opt
         )
 
         self.lr_scheduler = initialize_lr_scheduler(
-            self.configs["training"], self.outer_optimizer
+            self.configs["training"], outer_opt_for_sched
         )
+
+        self.outer_optimizer = wrapped_outer_opt
 
         # inner_optimizer stays untouched by DeepSpeed
         if self.should_smlmt:
