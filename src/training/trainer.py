@@ -157,23 +157,34 @@ class Trainer:
         else:
             self.outer_params = list(self.model.parameters())
 
+        # --- build outer optimizer ---
         self.outer_optimizer = torch.optim.AdamW(
             self.outer_params, lr=self.configs["training"].optimization.lr
         )
-
-        if self.should_smlmt:
-            self.model, self.outer_optimizer, self.inner_optimizer = self.fabric.setup(
-                self.model, self.outer_optimizer, self.inner_optimizer
-            )
-        else:
-            self.model, self.outer_optimizer = self.fabric.setup(
-                self.model, self.outer_optimizer
-            )
-
-        # single scheduler on the outer:
+        # --- build the scheduler now, before wrapping ---
         self.lr_scheduler = initialize_lr_scheduler(
             self.configs["training"], self.outer_optimizer
         )
+
+        # let Fabric wrap model, optimizer, (inner optimizer,) and scheduler
+        if self.should_smlmt:
+            (
+                self.model,
+                self.outer_optimizer,
+                self.inner_optimizer,
+                self.lr_scheduler,
+            ) = self.fabric.setup(
+                self.model,
+                self.outer_optimizer,
+                self.inner_optimizer,
+                self.lr_scheduler,
+            )
+        else:
+            self.model, self.outer_optimizer, self.lr_scheduler = self.fabric.setup(
+                self.model,
+                self.outer_optimizer,
+                self.lr_scheduler,
+            )
 
         # Setup HuggingFace Checkpointing
         if self.configs["checkpointing"].save_to_hf:
