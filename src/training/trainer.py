@@ -157,33 +157,32 @@ class Trainer:
         else:
             self.outer_params = list(self.model.parameters())
 
-        # --- build outer optimizer ---
+        # 1) build outer optimizer and scheduler up front
         self.outer_optimizer = torch.optim.AdamW(
             self.outer_params, lr=self.configs["training"].optimization.lr
         )
-        # --- build the scheduler now, before wrapping ---
         self.lr_scheduler = initialize_lr_scheduler(
             self.configs["training"], self.outer_optimizer
         )
 
-        # let Fabric wrap model, optimizer, (inner optimizer,) and scheduler
+        # 2) if you have an inner optimizer, don't hand it to DeepSpeed:
         if self.should_smlmt:
-            (
-                self.model,
-                self.outer_optimizer,
-                self.inner_optimizer,
-                self.lr_scheduler,
-            ) = self.fabric.setup(
-                self.model,
-                self.outer_optimizer,
-                self.inner_optimizer,
-                self.lr_scheduler,
-            )
-        else:
-            self.model, self.outer_optimizer, self.lr_scheduler = self.fabric.setup(
-                self.model,
-                self.outer_optimizer,
-                self.lr_scheduler,
+            # move head params onto the right device
+            for p in self.head_params:
+                p.data = p.data.to(self.fabric.device)
+
+        # 3) wrap *only* model + outer optimizer + scheduler with Fabric
+        self.model, self.outer_optimizer, self.lr_scheduler = self.fabric.setup(
+            self.model, self.outer_optimizer, self.lr_scheduler
+        )
+
+        # inner_optimizer stays untouched by DeepSpeed
+        if self.should_smlmt:
+            # make sure your inner optimizer is on the same device
+            for p in self.head_params:
+                p.requires_grad_(True)
+            self.inner_optimizer = torch.optim.SGD(
+                self.head_params, lr=self.smlmt_inner_lr
             )
 
         # Setup HuggingFace Checkpointing
