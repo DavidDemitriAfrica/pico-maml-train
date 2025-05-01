@@ -161,26 +161,18 @@ class Trainer:
         self.outer_optimizer = torch.optim.AdamW(
             self.outer_params, lr=self.configs["training"].optimization.lr
         )
+
+        # 3) wrap *only* model + outer optimizer  with Fabric
+        self.model, self.outer_optimizer = self.fabric.setup(
+            self.model, self.outer_optimizer
+        )
+
         self.lr_scheduler = initialize_lr_scheduler(
             self.configs["training"], self.outer_optimizer
         )
 
-        # 2) if you have an inner optimizer, don't hand it to DeepSpeed:
-        if self.should_smlmt:
-            # move head params onto the right device
-            for p in self.head_params:
-                p.data = p.data.to(self.fabric.device)
-
-        # 3) wrap *only* model + outer optimizer + scheduler with Fabric
-        self.model, self.outer_optimizer, self.lr_scheduler = self.fabric.setup(
-            self.model, self.outer_optimizer, self.lr_scheduler
-        )
-
         # inner_optimizer stays untouched by DeepSpeed
         if self.should_smlmt:
-            # make sure your inner optimizer is on the same device
-            for p in self.head_params:
-                p.requires_grad_(True)
             self.inner_optimizer = torch.optim.SGD(
                 self.head_params, lr=self.smlmt_inner_lr
             )
