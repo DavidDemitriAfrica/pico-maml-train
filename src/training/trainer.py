@@ -24,7 +24,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import yaml
-from datasets import Dataset, load_dataset
+from datasets import load_dataset
 from lightning.fabric.utilities.rank_zero import rank_zero_only
 
 from src.checkpointing import (
@@ -606,16 +606,16 @@ class Trainer:
             #
             ########################################################
 
-            if save_every > 0 and batch_step % save_every == 0:
-                self._log_training_metrics(
-                    interval_loss=interval_loss,
-                    interval_steps=interval_steps,
-                    interval_inf_or_nan_count=interval_inf_or_nan_count,
-                    batch_step=batch_step,
-                )
-                interval_loss = torch.tensor(0.0, device=self.fabric.device)
-                interval_steps = torch.tensor(0, device=self.fabric.device)
-                interval_inf_or_nan_count = torch.tensor(0, device=self.fabric.device)
+            # if save_every > 0 and batch_step % save_every == 0:
+            #    self._log_training_metrics(
+            #        interval_loss=interval_loss,
+            #        interval_steps=interval_steps,
+            #        interval_inf_or_nan_count=interval_inf_or_nan_count,
+            #        batch_step=batch_step,
+            #    )
+            #    interval_loss = torch.tensor(0.0, device=self.fabric.device)
+            #    interval_steps = torch.tensor(0, device=self.fabric.device)
+            #    interval_inf_or_nan_count = torch.tensor(0, device=self.fabric.device)
 
             ########################################################
             #
@@ -623,50 +623,50 @@ class Trainer:
             #
             ########################################################
 
-            if save_every > 0 and batch_step % save_every == 0:
-                if self.should_compute_learning_dynamics:
-                    self.log(f"Step {batch_step} -- 📈 Saving Learning Dynamics")
+            # if save_every > 0 and batch_step % save_every == 0:
+            #    if self.should_compute_learning_dynamics:
+            #        self.log(f"Step {batch_step} -- 📈 Saving Learning Dynamics")
 
-                    # Training Batch Learning Dynamics
-                    training_batch_dataset = Dataset.from_dict(training_batch)
+            # Training Batch Learning Dynamics
+            #        training_batch_dataset = Dataset.from_dict(training_batch)
 
-                    learning_dynamics_train_states = compute_learning_dynamics_states(
-                        checkpointing_config=self.configs["checkpointing"],
-                        fabric=self.fabric,
-                        model=self.model,
-                        dataset=training_batch_dataset,
-                        compute_gradients=True,
-                    )
+            #        learning_dynamics_train_states = compute_learning_dynamics_states(
+            #            checkpointing_config=self.configs["checkpointing"],
+            #            fabric=self.fabric,
+            #            model=self.model,
+            #            dataset=training_batch_dataset,
+            #            compute_gradients=True,
+            #        )
 
-                    save_learning_dynamics_states(
-                        checkpointing_config=self.configs["checkpointing"],
-                        checkpoint_step=batch_step,
-                        prefix="train",
-                        fabric=self.fabric,
-                        learning_dynamics_states=learning_dynamics_train_states,
-                        learning_dynamics_dataset=training_batch_dataset,
-                        tokenizer=self.tokenizer,
-                    )
-                    training_batch = {
-                        "input_ids": []
-                    }  # Resetting training_batch for next training batch
+            #        save_learning_dynamics_states(
+            #            checkpointing_config=self.configs["checkpointing"],
+            #            checkpoint_step=batch_step,
+            #            prefix="train",
+            #            fabric=self.fabric,
+            #            learning_dynamics_states=learning_dynamics_train_states,
+            #            learning_dynamics_dataset=training_batch_dataset,
+            #            tokenizer=self.tokenizer,
+            #        )
+            #        training_batch = {
+            #            "input_ids": []
+            #        }  # Resetting training_batch for next training batch
 
-                    # Validation Data Learning Dynamics
-                    if self.learning_dynamics_eval_dataset is not None:
-                        learning_dynamics_val_states = compute_learning_dynamics_states(
-                            checkpointing_config=self.configs["checkpointing"],
-                            fabric=self.fabric,
-                            model=self.model,
-                            dataset=self.learning_dynamics_eval_dataset,
-                            compute_gradients=True,
-                        )
-                        save_learning_dynamics_states(
-                            checkpointing_config=self.configs["checkpointing"],
-                            checkpoint_step=batch_step,
-                            prefix="val",
-                            fabric=self.fabric,
-                            learning_dynamics_states=learning_dynamics_val_states,
-                        )
+            # Validation Data Learning Dynamics
+            #        if self.learning_dynamics_eval_dataset is not None:
+            #            learning_dynamics_val_states = compute_learning_dynamics_states(
+            #                checkpointing_config=self.configs["checkpointing"],
+            #                fabric=self.fabric,
+            #                model=self.model,
+            #                dataset=self.learning_dynamics_eval_dataset,
+            #                compute_gradients=True,
+            #            )
+            #            save_learning_dynamics_states(
+            #                checkpointing_config=self.configs["checkpointing"],
+            #                checkpoint_step=batch_step,
+            #                prefix="val",
+            #                fabric=self.fabric,
+            #                learning_dynamics_states=learning_dynamics_val_states,
+            #            )
 
             ########################################################
             #
@@ -675,11 +675,11 @@ class Trainer:
             ########################################################
 
             # only step once per full (accumulation) batch
-            if not should_accumulate_gradients:
-                self.outer_optimizer.step()
-                self.lr_scheduler.step()
-                self.outer_optimizer.zero_grad()
-                batch_step += 1
+            # if not should_accumulate_gradients:
+            #    self.outer_optimizer.step()
+            #    self.lr_scheduler.step()
+            #    self.outer_optimizer.zero_grad()
+            #    batch_step += 1
 
             ########################################################
             #
