@@ -16,7 +16,7 @@ pipeline with the features:
 import logging
 import os
 import platform
-from typing import Any, Dict
+from typing import Any, Dict, List
 
 import lightning as L
 import psutil
@@ -144,6 +144,10 @@ class Trainer:
                 for p in self.model.classifier_head.parameters():
                     if p.dim() > 1:
                         nn.init.xavier_uniform_(p)
+                    # counters for logging
+            self.smlmt_step_count = 0
+            self.ar_step_count = 0
+            self.inner_acc_history: List[float] = []
 
         if self.should_smlmt:
             self.head_params = list(self.model.classifier_head.parameters())
@@ -567,14 +571,10 @@ class Trainer:
                     with torch.no_grad():
                         preds_sup = logits_sup.argmax(dim=-1)  # (B*k,)
                         acc_sup = (preds_sup == support_labels).float().mean()
-                    # ——— log inner‐loop metrics ———
-                    # use outer batch_step as the step index
-                    self.fabric.log("inner/loss_sup", loss_sup.item(), step=batch_step)
+                    # record support accuracy, but only keep it for checkpoint summaries
+                    self.inner_acc_history.append(acc_sup.item())
+                    # still log
                     self.fabric.log("inner/acc_sup", acc_sup.item(), step=batch_step)
-                    self.log(
-                        f"    └─ Inner step {inner_step+1}/{self.smlmt_inner_steps} — "
-                        f"loss_sup={loss_sup:.4f}, acc_sup={acc_sup:.4f}"
-                    )
 
                     self.fabric.backward(loss_sup, model=self.model)
                     self.inner_optimizer.step()
@@ -705,7 +705,10 @@ class Trainer:
                 self.lr_scheduler.step()
                 self.outer_optimizer.zero_grad()
                 batch_step += 1
-
+                if do_meta:
+                    self.smlmt_step_count += 1
+                else:
+                    self.ar_step_count += 1
                 # ——— Logging ———
                 if (
                     batch_step % self.configs["monitoring"].logging.log_every_n_steps
@@ -735,6 +738,20 @@ class Trainer:
                 # ——— Training Checkpointing & Evaluation ———
                 if save_every > 0 and batch_step % save_every == 0:
                     self.log(f"Step {batch_step} -- 💾 Saving Checkpoint")
+                    avg_acc = (
+                        sum(self.inner_acc_history) / len(self.inner_acc_history)
+                        if self.inner_acc_history
+                        else 0.0
+                    )
+                    self.log(
+                        f"📋 Checkpoint @step {batch_step}: "
+                        f"SMLMT steps={self.smlmt_step_count}, AR steps={self.ar_step_count}, "
+                        f"avg_support_acc={avg_acc:.4f}"
+                    )
+                    # reset for next interval
+                    self.smlmt_step_count = 0
+                    self.ar_step_count = 0
+                    self.inner_acc_history.clear()
                     save_checkpoint(
                         configs=self.configs,
                         checkpoint_step=batch_step,
