@@ -73,6 +73,8 @@ class Trainer:
         #
         ########################################################
 
+        torch.autograd.set_detect_anomaly(True)
+
         # Setup Config
         self.configs = initialize_configuration(config_path)
 
