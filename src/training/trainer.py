@@ -127,6 +127,7 @@ class Trainer:
             self.smlmt_max_token_freq = self.configs["smlmt"].max_token_freq
             self.smlmt_inner_steps = self.configs["smlmt"].inner_steps
             self.smlmt_inner_lr = self.configs["smlmt"].inner_lr
+            self.smlmt_support_size = self.configs["smlmt"].support_size
             head_cfg = self.configs["smlmt"].classifier_head
             layers = []
             in_dim = self.model.config.d_model
@@ -521,7 +522,10 @@ class Trainer:
                 B, L = _input_ids.size()
 
                 # 2) sample two mask‐positions per sequence: support & query
-                pos_sup = torch.randint(1, L - 1, (B,), device=_input_ids.device)
+                k = self.smlmt_support_size
+                pos_sup = torch.randint(
+                    1, L - 1, (B, k), device=_input_ids.device
+                )  # (B,k)
                 pos_q = torch.randint(1, L - 1, (B,), device=_input_ids.device)
 
                 support_ids = _input_ids.clone()
@@ -530,8 +534,10 @@ class Trainer:
                     # e.g. use pad_token_id or eos_token_id
                     mask_id = self.tokenizer.pad_token_id or self.tokenizer.eos_token_id
 
-                support_labels = support_ids[torch.arange(B), pos_sup].clone()
-                support_ids[torch.arange(B), pos_sup] = mask_id
+                support_labels = support_ids[
+                    torch.arange(B).unsqueeze(1), pos_sup
+                ].clone()  # (B,k)
+                support_ids[torch.arange(B).unsqueeze(1), pos_sup] = mask_id
 
                 query_ids = _input_ids.clone()
                 query_labels = query_ids[torch.arange(B), pos_q].clone()
@@ -548,15 +554,19 @@ class Trainer:
                     head_dtype = next(self.model.classifier_head.parameters()).dtype
                     hidden_sup = hidden_sup.to(head_dtype)
                     logits_sup = self.model.classifier_head(hidden_sup)
-                    logits_sup = logits_sup[torch.arange(B), pos_sup, :]
+                    logits_sup = logits_sup[torch.arange(B).unsqueeze(1), pos_sup, :]
+                    # flatten to (B*k, V) and (B*k,) for cross‐entropy:
+                    B, k, V = logits_sup.shape
+                    logits_sup = logits_sup.view(B * k, V)
+                    support_labels = support_labels.view(B * k)
 
+                    loss_sup = F.cross_entropy(logits_sup, support_labels)
                     loss_sup = F.cross_entropy(logits_sup, support_labels)
                     # use Fabric so on multi‐GPU we sync grads if desired
                     # ——— compute support accuracy ———
                     with torch.no_grad():
-                        preds_sup = logits_sup.argmax(dim=-1)
+                        preds_sup = logits_sup.argmax(dim=-1)  # (B*k,)
                         acc_sup = (preds_sup == support_labels).float().mean()
-
                     # ——— log inner‐loop metrics ———
                     # use outer batch_step as the step index
                     self.fabric.log("inner/loss_sup", loss_sup.item(), step=batch_step)
