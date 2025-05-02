@@ -543,6 +543,9 @@ class Trainer:
                     # freeze transformer weights
                     with self.fabric.no_backward_sync(self.model):
                         hidden_sup, _ = self.model(support_ids, return_hidden=True)
+                        # make sure hidden_sup is the same dtype as the head’s weights:
+                        head_dtype = next(self.model.classifier_head.parameters()).dtype
+                        hidden_sup = hidden_sup.to(head_dtype)
                         logits_sup = self.model.classifier_head(hidden_sup)
                         logits_sup = logits_sup[torch.arange(B), pos_sup, :]
 
@@ -552,9 +555,11 @@ class Trainer:
                     self.inner_optimizer.step()
                     for p in self.backbone_params:
                         p.requires_grad_(True)
+
                 # 5) compute query loss on the *adapted* head
 
                 hidden_q, _ = self.model(query_ids, return_hidden=True)
+                hidden_q = hidden_q.to(head_dtype)
                 logits_q = self.model.classifier_head(hidden_q)[
                     torch.arange(B), pos_q, :
                 ]
