@@ -2,7 +2,7 @@
 
 checkpointing:
   # still needs a run_name for logs, but we won’t save anything
-  run_name: "pico-maml-decoder-tiny-runpod-16"
+  run_name: "pico-maml-decoder-tiny-runpod-17"
   save_to_hf: false         # no pushes to HuggingFace
   auto_resume: false        # don’t try to resume from disk
   save_every_n_steps: 100     # never checkpoint
@@ -43,6 +43,7 @@ smlmt:
     hidden_dim: 128
     dropout: 0.1
     init_method: "xavier"
+  support_size: int = 5
 
 data:
   dataset:
