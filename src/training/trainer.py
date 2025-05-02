@@ -565,8 +565,7 @@ class Trainer:
                     torch.arange(B), pos_q, :
                 ]
                 loss = F.cross_entropy(logits_q, query_labels)
-                # 6) restore head to its original “initial” state
-                self.model.classifier_head.load_state_dict(orig_head)
+
             else:
                 # --- Autoregressive LM branch ---
                 input_ids = _input_ids[:, :-1]
@@ -591,6 +590,10 @@ class Trainer:
                 / self.configs["training"].optimization.gradient_accumulation_steps,
                 model=self.model,
             )
+
+            if do_meta:
+                with torch.no_grad():
+                    self.model.classifier_head.load_state_dict(orig_head)
 
             if torch.isnan(loss) or torch.isinf(loss):
                 interval_inf_or_nan_count += 1
