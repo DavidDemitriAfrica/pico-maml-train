@@ -132,7 +132,6 @@ class Trainer:
                 layers += [
                     nn.Linear(in_dim, head_cfg.hidden_dim),
                     nn.ReLU(),
-                    nn.Dropout(head_cfg.dropout),
                 ]
                 in_dim = head_cfg.hidden_dim
             # final projection to vocab-size (for token prediction)
@@ -165,14 +164,9 @@ class Trainer:
             self.configs["training"], raw_outer_opt
         )
 
-        if self.should_smlmt:
-            self.model, self.outer_optimizer, self.inner_optimizer = self.fabric.setup(
-                self.model, raw_outer_opt, self.inner_optimizer
-            )
-        else:
-            self.model, self.outer_optimizer = self.fabric.setup(
-                self.model, raw_outer_opt
-            )
+        # 3) DeepSpeed only supports ONE optimizer at setup time.
+        #    Always wrap model + outer optimizer only.
+        self.model, self.outer_optimizer = self.fabric.setup(self.model, raw_outer_opt)
 
         # Setup HuggingFace Checkpointing
         if self.configs["checkpointing"].save_to_hf:
@@ -310,6 +304,7 @@ class Trainer:
             optimizer=self.outer_optimizer,
             lr_scheduler=self.lr_scheduler,
             tokenizer=self.tokenizer,
+            inner_optimizer=self.inner_optimizer if self.should_smlmt else None,
         )
 
         # Save Initial Evaluation Results
@@ -402,6 +397,7 @@ class Trainer:
                 optimizer=self.outer_optimizer,
                 lr_scheduler=self.lr_scheduler,
                 tokenizer=self.tokenizer,
+                inner_optimizer=self.inner_optimizer if self.should_smlmt else None,
             )
 
             # Final evaluation
