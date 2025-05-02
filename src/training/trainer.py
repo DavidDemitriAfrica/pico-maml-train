@@ -552,6 +552,20 @@ class Trainer:
 
                     loss_sup = F.cross_entropy(logits_sup, support_labels)
                     # use Fabric so on multi‐GPU we sync grads if desired
+                    # ——— compute support accuracy ———
+                    with torch.no_grad():
+                        preds_sup = logits_sup.argmax(dim=-1)
+                        acc_sup = (preds_sup == support_labels).float().mean()
+
+                    # ——— log inner‐loop metrics ———
+                    # use outer batch_step as the step index
+                    self.fabric.log("inner/loss_sup", loss_sup.item(), step=batch_step)
+                    self.fabric.log("inner/acc_sup", acc_sup.item(), step=batch_step)
+                    self.log(
+                        f"    └─ Inner step {_+1}/{self.smlmt_inner_steps} — "
+                        f"loss_sup={loss_sup:.4f}, acc_sup={acc_sup:.4f}"
+                    )
+
                     self.fabric.backward(loss_sup, model=self.model)
                     self.inner_optimizer.step()
                     for p in self.backbone_params:
