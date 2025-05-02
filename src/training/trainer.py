@@ -541,17 +541,16 @@ class Trainer:
                     # zero grad on _inner_ optimizer up front
                     self.inner_optimizer.zero_grad()
                     # freeze transformer weights
-                    with self.fabric.no_backward_sync(self.model):
-                        hidden_sup, _ = self.model(support_ids, return_hidden=True)
-                        # make sure hidden_sup is the same dtype as the head’s weights:
-                        head_dtype = next(self.model.classifier_head.parameters()).dtype
-                        hidden_sup = hidden_sup.to(head_dtype)
-                        logits_sup = self.model.classifier_head(hidden_sup)
-                        logits_sup = logits_sup[torch.arange(B), pos_sup, :]
+                    hidden_sup, _ = self.model(support_ids, return_hidden=True)
+                    # make sure hidden_sup is the same dtype as the head’s weights:
+                    head_dtype = next(self.model.classifier_head.parameters()).dtype
+                    hidden_sup = hidden_sup.to(head_dtype)
+                    logits_sup = self.model.classifier_head(hidden_sup)
+                    logits_sup = logits_sup[torch.arange(B), pos_sup, :]
 
-                        loss_sup = F.cross_entropy(logits_sup, support_labels)
-                        # use Fabric so on multi‐GPU we sync grads if desired
-                        self.fabric.backward(loss_sup, model=self.model)
+                    loss_sup = F.cross_entropy(logits_sup, support_labels)
+                    # use Fabric so on multi‐GPU we sync grads if desired
+                    self.fabric.backward(loss_sup, model=self.model)
                     self.inner_optimizer.step()
                     for p in self.backbone_params:
                         p.requires_grad_(True)
@@ -585,20 +584,17 @@ class Trainer:
                 "training"
             ].optimization.gradient_accumulation_steps != 0
 
-            with self.fabric.no_backward_sync(
-                self.model, enabled=should_accumulate_gradients
-            ):
-                self.fabric.backward(
-                    loss
-                    / self.configs["training"].optimization.gradient_accumulation_steps,
-                    model=self.model,
-                )
+            self.fabric.backward(
+                loss
+                / self.configs["training"].optimization.gradient_accumulation_steps,
+                model=self.model,
+            )
 
-                if torch.isnan(loss) or torch.isinf(loss):
-                    interval_inf_or_nan_count += 1
-                else:
-                    interval_loss += loss.item()
-                    interval_steps += 1
+            if torch.isnan(loss) or torch.isinf(loss):
+                interval_inf_or_nan_count += 1
+            else:
+                interval_loss += loss.item()
+                interval_steps += 1
 
             ########################################################
             #
