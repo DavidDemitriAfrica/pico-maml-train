@@ -496,7 +496,7 @@ class Trainer:
             # Forward Pass (with mutually‐exclusive SMLMT vs autoregressive branches)
             ################################################################################
             _input_ids = torch.tensor(sub_batch["input_ids"], device=self.fabric.device)
-            max_len = self.configs["model"].max_seq_len + 1
+            max_len = self.configs["model"].max_seq_len
             if _input_ids.size(1) > max_len:
                 _input_ids = _input_ids[:, -max_len:]
             # 1) learning‐dynamics gather (unchanged)
