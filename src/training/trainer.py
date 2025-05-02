@@ -537,7 +537,7 @@ class Trainer:
                 query_labels = query_ids[torch.arange(B), pos_q].clone()
                 query_ids[torch.arange(B), pos_q] = mask_id
 
-                for _ in range(self.smlmt_inner_steps):
+                for inner_step in range(self.smlmt_inner_steps):
                     for p in self.backbone_params:
                         p.requires_grad_(False)
                     # zero grad on _inner_ optimizer up front
@@ -562,7 +562,7 @@ class Trainer:
                     self.fabric.log("inner/loss_sup", loss_sup.item(), step=batch_step)
                     self.fabric.log("inner/acc_sup", acc_sup.item(), step=batch_step)
                     self.log(
-                        f"    └─ Inner step {_+1}/{self.smlmt_inner_steps} — "
+                        f"    └─ Inner step {inner_step+1}/{self.smlmt_inner_steps} — "
                         f"loss_sup={loss_sup:.4f}, acc_sup={acc_sup:.4f}"
                     )
 
