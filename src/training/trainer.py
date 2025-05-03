@@ -566,7 +566,6 @@ class Trainer:
                     support_labels = support_labels.view(B * k)
 
                     loss_sup = F.cross_entropy(logits_sup, support_labels)
-                    loss_sup = F.cross_entropy(logits_sup, support_labels)
                     # use Fabric so on multi‐GPU we sync grads if desired
                     # ——— compute support accuracy ———
                     with torch.no_grad():
@@ -581,7 +580,18 @@ class Trainer:
                     self.inner_optimizer.step()
                     for p in self.backbone_params:
                         p.requires_grad_(True)
-
+                    for name, p in self.model.classifier_head.named_parameters():
+                        if p.grad is None:
+                            self.log(
+                                f"⚠️ NO grad for head param: {name}",
+                                level=logging.WARNING,
+                            )
+                        else:
+                            grad_norm = p.grad.norm().item()
+                            self.log(
+                                f"Head param '{name}' grad norm = {grad_norm:.3e}",
+                                level=logging.INFO,
+                            )
                 # 5) compute query loss on the *adapted* head
 
                 hidden_q, _ = self.model(query_ids, return_hidden=True)
