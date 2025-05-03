@@ -16,7 +16,7 @@ pipeline with the features:
 import logging
 import os
 import platform
-from typing import Any, Dict, List
+from typing import Any, Dict
 
 import lightning as L
 import psutil
@@ -144,12 +144,13 @@ class Trainer:
                 for p in self.model.classifier_head.parameters():
                     if p.dim() > 1:
                         nn.init.xavier_uniform_(p)
-                    # counters for logging
+            # counters for logging
             self.smlmt_step_count = 0
             self.ar_step_count = 0
-            self.inner_acc_history: List[float] = []
+            self.inner_acc_history = []
+            self.query_acc_history = []
 
-        if self.should_smlmt:
+            # param split
             self.head_params = list(self.model.classifier_head.parameters())
             self.backbone_params = [
                 p
@@ -744,14 +745,9 @@ class Trainer:
                         else 0.0
                     )
                     self.log(
-                        f"📋 Checkpoint @step {batch_step}: "
                         f"SMLMT steps={self.smlmt_step_count}, AR steps={self.ar_step_count}, "
                         f"avg_support_acc={avg_acc:.4f}"
                     )
-                    # reset for next interval
-                    self.smlmt_step_count = 0
-                    self.ar_step_count = 0
-                    self.inner_acc_history.clear()
                     save_checkpoint(
                         configs=self.configs,
                         checkpoint_step=batch_step,
@@ -882,6 +878,56 @@ class Trainer:
             self.log(f"         ├── weight_mean: {w_mean:.4f}")
             self.log(f"         ├── weight_std:  {w_std:.4f}")
             self.log(f"         └── grad_norm:   {grad_norm:.4f}")
+
+            # —— Meta/AR mix & avg‐inner/query accuracy ——
+            meta_steps = getattr(self, "smlmt_step_count", 0)
+            ar_steps = getattr(self, "ar_step_count", 0)
+            avg_sup = (
+                sum(self.inner_acc_history) / len(self.inner_acc_history)
+                if self.inner_acc_history
+                else 0.0
+            )
+            avg_q = (
+                sum(self.query_acc_history) / len(self.query_acc_history)
+                if self.query_acc_history
+                else 0.0
+            )
+            mix_msg = (
+                f"    └─ SMLMT mix: meta_steps={meta_steps}, "
+                f"ar_steps={ar_steps}, avg_sup_acc={avg_sup:.4f}, "
+                f"avg_query_acc={avg_q:.4f}"
+            )
+            self.log(mix_msg)
+
+            # push these to wandb as well
+            self.fabric.log("meta/meta_steps", meta_steps, step=batch_step)
+            self.fabric.log("meta/ar_steps", ar_steps, step=batch_step)
+            self.fabric.log("meta/avg_sup_acc", avg_sup, step=batch_step)
+            self.fabric.log("meta/avg_q_acc", avg_q, step=batch_step)
+
+            # —— sanity‐checks for some common pitfalls ——
+            mask_id = self.tokenizer.mask_token_id
+            pad_id = self.tokenizer.pad_token_id
+            if mask_id is None or mask_id == pad_id:
+                self.log(
+                    "⚠️ Using pad/eos as mask token—no true mask token defined",
+                    level=logging.WARNING,
+                )
+            if grad_norm == 0.0:
+                self.log(
+                    "⚠️ Head gradients zero—inner loop may not be updating the head",
+                    level=logging.WARNING,
+                )
+            if avg_sup == 0.0:
+                self.log(
+                    "⚠️ Support accuracy is zero—support signal may be too weak",
+                    level=logging.WARNING,
+                )
+            if avg_q == 0.0:
+                self.log(
+                    "⚠️ Query accuracy is zero—head is not adapting",
+                    level=logging.WARNING,
+                )
 
     def _log_evaluation_results(
         self, evaluation_results: Dict[str, Any], batch_step: int
