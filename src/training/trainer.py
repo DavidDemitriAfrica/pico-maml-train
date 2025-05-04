@@ -491,6 +491,9 @@ class Trainer:
         #
         ###############################################################
 
+        accum = self.configs["training"].optimization.gradient_accumulation_steps
+        local_accum = 0
+
         for sub_batch_step, sub_batch in enumerate(
             self.train_iterator, start=initial_sub_batch_step
         ):
@@ -689,15 +692,13 @@ class Trainer:
                     model=self.model,
                 )
 
+            local_accum += 1
+
             ########################################################
             #
             # Gradient accumulation
             #
             ########################################################
-
-            should_accumulate_gradients = (sub_batch_step + 1) % self.configs[
-                "training"
-            ].optimization.gradient_accumulation_steps != 0
 
             if torch.isnan(loss) or torch.isinf(loss):
                 interval_inf_or_nan_count += 1
@@ -780,10 +781,12 @@ class Trainer:
             ########################################################
 
             # only step once per full (accumulation) batch
-            if not should_accumulate_gradients:
+            if local_accum == accum:
                 self.outer_optimizer.step()
                 self.lr_scheduler.step()
                 self.outer_optimizer.zero_grad()
+
+                local_accum = 0
                 batch_step += 1
                 if do_meta:
                     self.smlmt_step_count += 1

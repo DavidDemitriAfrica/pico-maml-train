@@ -4,7 +4,7 @@
 
 checkpointing:
   # still needs a run_name for logs, but we won’t save anything
-  run_name: "pico-maml-decoder-small-runpod-4"
+  run_name: "pico-maml-decoder-small-runpod-5"
   save_to_hf: false         # no pushes to HuggingFace
   auto_resume: false        # don’t try to resume from disk
   save_every_n_steps: 100     # never checkpoint
