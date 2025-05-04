@@ -172,10 +172,6 @@ class Trainer:
             self.configs["training"], raw_outer_opt
         )
 
-        # 3) DeepSpeed only supports ONE optimizer at setup time.
-        #    Always wrap model + outer optimizer only.
-        self.model, self.outer_optimizer = self.fabric.setup(self.model, raw_outer_opt)
-
         # Setup HuggingFace Checkpointing
         if self.configs["checkpointing"].save_to_hf:
             initialize_hf_checkpointing(
@@ -247,6 +243,8 @@ class Trainer:
             # expand the model’s embeddings once to pick up the new token
             self.model.resize_token_embeddings(len(self.tokenizer))
         self.mask_id = self.tokenizer.mask_token_id
+
+        self.model, self.outer_optimizer = self.fabric.setup(self.model, raw_outer_opt)
 
         # NOTE: We may need to fast-forward the iterator to the correct step so that we can
         # continue from the correct batch of data we would have seen had training not
