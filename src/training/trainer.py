@@ -521,7 +521,7 @@ class Trainer:
             # 2) choose branch *synchronously* across all ranks
             rand_val = random.random()
             rand_val = self.fabric.broadcast(rand_val, src=0)
-            do_meta = self.should_smlmt and (rand_val.item() < self.smlmt_hybrid_ratio)
+            do_meta = self.should_smlmt and (rand_val < self.smlmt_hybrid_ratio)
             if do_meta:
                 # 1) snapshot only the final-linear’s weights & biases
                 final = list(self.model.classifier_head.children())[-1]
