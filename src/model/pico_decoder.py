@@ -533,17 +533,30 @@ class PicoDecoder(nn.Module):
 
     def resize_token_embeddings(self, new_vocab_size: int):
         """
-        Expand the token_embedding (and tied lm_head if present) to accommodate new special tokens.
+        Expand input embeddings (embedding_proj) and output head (de_embedding_proj)
+        to accommodate the new vocab size.
         """
-        old_emb = self.embedding_proj
+        # 1) Input embedding
+        old_emb = self.embedding_proj  # nn.Embedding(old_vocab, dim)
         old_vocab, dim = old_emb.weight.shape
+        assert old_emb.weight.dim() == 2, f"Expected 2D, got {old_emb.weight.shape}"
         new_emb = nn.Embedding(new_vocab_size, dim)
-        new_emb.weight.data[:old_vocab].copy_(old_emb.weight.data)
+        # debug print
+        print(f"[resize] embedding: {old_emb.weight.shape} -> {new_emb.weight.shape}")
+        # copy old weights into the first old_vocab rows
+        new_emb.weight.data[:old_vocab, :].copy_(old_emb.weight.data)
         self.embedding_proj = new_emb
 
-        old_out = self.de_embedding_proj
+        # 2) Output projection
+        old_out = self.de_embedding_proj  # nn.Linear(dim, old_vocab)
+        w = old_out.weight  # shape: (old_vocab, dim)
+        assert w.dim() == 2, f"Expected 2D, got {w.shape}"
+        assert w.shape[0] == old_vocab and w.shape[1] == dim
         new_out = nn.Linear(dim, new_vocab_size, bias=False)
-        new_out.weight.data[:old_vocab].copy_(old_out.weight.data)
+        # debug print
+        print(f"[resize] de_embedding_proj: {w.shape} -> {new_out.weight.shape}")
+        # copy old output weights into the first old_vocab rows
+        new_out.weight.data[:old_vocab, :].copy_(w.data)
         self.de_embedding_proj = new_out
 
 
