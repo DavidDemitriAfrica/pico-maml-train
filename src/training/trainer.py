@@ -556,8 +556,7 @@ class Trainer:
                     hidden_sup, _ = self.model(support_ids, return_hidden=True)
                     feats_sup = hidden_sup[torch.arange(B).unsqueeze(1), pos_sup]
                     feats_sup = feats_sup.reshape(-1, feats_sup.size(-1))
-
-                    # full head logits, then restrict to K classes
+                    feats_sup = feats_sup.to(final.weight.dtype)
                     logits_sup_all = self.model.classifier_head(feats_sup)
                     flat_labels, inv_idx = support_labels.view(-1), None
                     unique_labels, inv_idx = torch.unique(
@@ -598,6 +597,7 @@ class Trainer:
                 # 6) query pass on adapted head
                 hidden_q, _ = self.model(query_ids, return_hidden=True)
                 feats_q = hidden_q[torch.arange(B), pos_q]
+                feats_q = feats_q.to(final.weight.dtype)
                 logits_q_all = self.model.classifier_head(feats_q)
                 idx_q = torch.bucketize(query_labels, unique_labels)
                 logits_q = logits_q_all[:, unique_labels]
