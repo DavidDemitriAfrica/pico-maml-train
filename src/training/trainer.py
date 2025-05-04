@@ -587,7 +587,6 @@ class Trainer:
                     self.fabric.log(
                         "inner/grad_norm_sup", grad_norm_sup, step=batch_step
                     )
-                    self.fabric.backward(loss_sup, model=self.model)
                     self.fabric.log("inner/loss_sup", loss_sup.item(), step=batch_step)
                     # — stash pre‐update slice for change‐norm logging —
                     W_pre = final.weight[unique_labels].clone()
