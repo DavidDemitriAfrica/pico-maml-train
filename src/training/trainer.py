@@ -567,15 +567,25 @@ class Trainer:
                     logits_sup = logits_sup[torch.arange(B).unsqueeze(1), pos_sup, :]
                     # flatten to (B*k, V) and (B*k,) for cross‐entropy:
                     B, k, V = logits_sup.shape
-                    logits_sup = logits_sup.view(B * k, V)
-                    support_labels = support_labels.view(B * k)
+                    logits_sup = logits_sup.view(B * k, V)  # (B*k, V)
+                    support_labels = support_labels.view(B * k)  # (B*k,)
 
-                    loss_sup = F.cross_entropy(logits_sup, support_labels)
-                    # use Fabric so on multi‐GPU we sync grads if desired
-                    # ——— compute support accuracy ———
+                    # 1) pick out the unique support classes (size = K ≤ B*k)
+                    unique_labels = torch.unique(support_labels)  # (K,)
+
+                    # 2) slice logits to just those K columns → (B*k, K)
+                    small_logits = logits_sup[:, unique_labels]
+
+                    # 3) remap original labels into 0…K-1 for the small softmax
+                    new_labels = torch.bucketize(support_labels, unique_labels)
+
+                    # 4) compute loss & accuracy on the K-way problem
+                    loss_sup = F.cross_entropy(small_logits, new_labels)
+
                     with torch.no_grad():
-                        preds_sup = logits_sup.argmax(dim=-1)  # (B*k,)
-                        acc_sup = (preds_sup == support_labels).float().mean()
+                        preds_sup = small_logits.argmax(dim=-1)
+                        acc_sup = (preds_sup == new_labels).float().mean()
+
                     # record support accuracy, but only keep it for checkpoint summaries
                     self.inner_acc_history.append(acc_sup.item())
                     # still log
