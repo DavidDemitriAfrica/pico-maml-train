@@ -1,11 +1,13 @@
-# pico-maml-decoder-tiny.yaml
+# runpod-pico-maml-decoder-tiny.yaml
 
 checkpointing:
   run_name: "pico-maml-decoder-tiny-1"
-  save_to_hf: true
+  save_to_hf: true         # no pushes to HuggingFace
+  auto_resume: true        # don’t try to resume from disk
+  save_every_n_steps: 100 
   hf_checkpoint:
     repo_id: "davidafrica/pico-maml-decoder-tiny"
-  save_every_n_steps: 1000
+
   learning_dynamics:
     batch_size: 256
 
@@ -13,44 +15,45 @@ model:
   # tiny decoder
   d_model: 96
   activation_hidden_dim: 384
-  n_layers: 4
-  n_heads: 4
-  dropout: 0.1
+  max_seq_len: 512 
 
 monitoring:
-  save_to_wandb: true
-  wandb:
-    project: "pico-maml"
-    entity: "pico-lm"
+  save_to_wandb: true      
+  logging:
+    log_every_n_steps: 10 
 
 training:
-  max_steps: 20000
+  max_steps: 100000
   optimization:
     gradient_accumulation_steps: 4
+    gradient_checkpointing: true
 
   fabric:
-    precision: "bf16"
-    num_nodes: 4
-    num_devices: 4
+    precision: "bf16-mixed"
+    devices: 4              # use 4 GPUs on this node
+    num_nodes: 1
 
 smlmt:
   enabled: true
-  hybrid_ratio: 0.5        # fraction of batches to do MAML
-  inner_steps: 10           # K inner‐loop SGD steps
-  inner_lr: 0.01           # inner‐loop learning rate
-  min_token_freq: 1        # only mask tokens ≥ this freq
-  max_token_freq: -1       # no upper‐bound
+  hybrid_ratio: 0.5
+  inner_steps: 10
+  inner_lr: 0.01
+  min_token_freq: 10
+  max_token_freq: 10000
   classifier_head:
-    num_layers: 2
+    num_layers: 4
     hidden_dim: 128
     dropout: 0.1
     init_method: "xavier"
+  support_size: 10
 
 data:
   dataset:
     name: "pico-lm/pretokenized-dolma"
     split: "train"
-    cache_dir: "/home/dda28/rds/hpc-work/shared_hf_cache/pico-lm/pretokenized-dolma"
+    # no cache_dir so HF will stream into ephemeral storage
+  dataloader:
+    batch_size: 256         # 256 is the default, but we can override it here
 
 evaluation:
   paloma:

@@ -4,9 +4,9 @@
 
 checkpointing:
   # still needs a run_name for logs, but we won’t save anything
-  run_name: "pico-maml-decoder-tiny-runpod-22"
-  save_to_hf: false         # no pushes to HuggingFace
-  auto_resume: false        # don’t try to resume from disk
+  run_name: "pico-maml-decoder-tiny-1"
+  save_to_hf: true         # no pushes to HuggingFace
+  auto_resume: true        # don’t try to resume from disk
   save_every_n_steps: 100     # never checkpoint
   learning_dynamics:
     layer_suffixes: []      # disable LD collection entirely
@@ -23,7 +23,7 @@ monitoring:
     log_every_n_steps: 10  # you can still print to console
 
 training:
-  max_steps: 20000
+  max_steps: 100000
   optimization:
     gradient_accumulation_steps: 4
     gradient_checkpointing: true
@@ -36,7 +36,7 @@ training:
 smlmt:
   enabled: true
   hybrid_ratio: 0.5
-  inner_steps: 20
+  inner_steps: 10
   inner_lr: 0.01
   min_token_freq: 10
   max_token_freq: 10000
