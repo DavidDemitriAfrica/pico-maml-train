@@ -241,6 +241,13 @@ class Trainer:
 
         self.tokenizer = initialize_tokenizer(data_config=self.configs["data"])
 
+        # ── Ensure a real [MASK] token is present ───────────────────────────────
+        if self.tokenizer.mask_token_id is None:
+            self.tokenizer.add_special_tokens({"mask_token": "[MASK]"})
+            # expand the model’s embeddings once to pick up the new token
+            self.model.resize_token_embeddings(len(self.tokenizer))
+        self.mask_id = self.tokenizer.mask_token_id
+
         # NOTE: We may need to fast-forward the iterator to the correct step so that we can
         # continue from the correct batch of data we would have seen had training not
         # previously stopped.
@@ -912,26 +919,6 @@ class Trainer:
             self.fabric.log("meta/avg_sup_acc", avg_sup, step=batch_step)
             self.fabric.log("meta/avg_q_acc", avg_q, step=batch_step)
 
-            # —— sanity‐checks for some common pitfalls ——
-            mask_id = self.tokenizer.mask_token_id
-            pad_id = self.tokenizer.pad_token_id
-            if mask_id is None or mask_id == pad_id:
-                self.tokenizer.add_special_tokens({"mask_token": "[MASK]"})
-                # resize the model’s token‐embeddings to pick up the new special token
-                old_emb = (
-                    self.model.token_embedding
-                )  # assume your model exposes its nn.Embedding here
-                old_vocab, dim = old_emb.weight.shape
-                new_vocab = len(self.tokenizer)
-                new_emb = nn.Embedding(new_vocab, dim)
-                # copy over the old weights
-                new_emb.weight.data[:old_vocab].copy_(old_emb.weight.data)
-                self.model.token_embedding = new_emb
-                # if you tie input & output weights, also re-tie your lm_head:
-                if hasattr(self.model, "lm_head"):
-                    # rebuild a linear layer and tie its weights
-                    self.model.lm_head = nn.Linear(dim, new_vocab, bias=False)
-                    self.model.lm_head.weight = new_emb.weight
             if grad_norm == 0.0:
                 self.log(
                     "⚠️ Head gradients zero—inner loop may not be updating the head",
