@@ -109,6 +109,13 @@ class Trainer:
             fabric=self.fabric,
         )
 
+        self.tokenizer = initialize_tokenizer(
+            self.configs["data"], self.configs["model"]
+        )
+
+        # finally stash the id for use in masking
+        self.mask_id = self.tokenizer.mask_token_id
+
         # Setup Model
         self.model = initialize_model(model_config=self.configs["model"])
 
@@ -175,10 +182,6 @@ class Trainer:
         # 3) DeepSpeed only supports ONE optimizer at setup time.
         #    Always wrap model + outer optimizer only.
         #    Move the tokenizer to initialize before the model is wrapped.
-        self.tokenizer = initialize_tokenizer(data_config=self.configs["data"])
-
-        # finally stash the id for use in masking
-        self.mask_id = self.tokenizer.mask_token_id
 
         self.model, self.outer_optimizer = self.fabric.setup(self.model, raw_outer_opt)
 
