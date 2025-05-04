@@ -531,6 +531,21 @@ class PicoDecoder(nn.Module):
 
         return logits, cached_key_values
 
+    def resize_token_embeddings(self, new_vocab_size: int):
+        """
+        Expand the token_embedding (and tied lm_head if present) to accommodate new special tokens.
+        """
+        old_emb = self.token_embedding
+        old_vocab, dim = old_emb.weight.shape
+        new_emb = nn.Embedding(new_vocab_size, dim)
+        new_emb.weight.data[:old_vocab].copy_(old_emb.weight.data)
+        self.token_embedding = new_emb
+
+        # if you tie input & output embeddings via an lm_head:
+        if hasattr(self, "lm_head"):
+            self.lm_head = nn.Linear(dim, new_vocab_size, bias=False)
+            self.lm_head.weight = self.token_embedding.weight
+
 
 ########################################################
 #
