@@ -179,9 +179,20 @@ class Trainer:
 
         # ── Ensure a real [MASK] token is present ───────────────────────────────
         if self.tokenizer.mask_token_id is None:
-            self.tokenizer.add_special_tokens({"mask_token": "[MASK]"})
-            # expand the model’s embeddings once to pick up the new token
-            self.model.resize_token_embeddings(len(self.tokenizer))
+            # 1) add it and see how many tokens were really added
+            num_added = self.tokenizer.add_special_tokens({"mask_token": "[MASK]"})
+            if num_added > 0:
+                # 2) compute the new vocab size
+                new_vocab_size = len(self.tokenizer)
+                # 3) update your model‐config so everything downstream (e.g. classifier heads) knows
+                self.model.config.vocab_size = new_vocab_size
+                # 4) actually grow both input/embedding_proj and output/de_embedding_proj
+                self.model.resize_token_embeddings(new_vocab_size)
+            else:
+                self.logger.warning(
+                    "`add_special_tokens` reported 0 new tokens—mask may not have been added"
+                )
+        # finally stash the id for use in masking
         self.mask_id = self.tokenizer.mask_token_id
 
         self.model, self.outer_optimizer = self.fabric.setup(self.model, raw_outer_opt)
