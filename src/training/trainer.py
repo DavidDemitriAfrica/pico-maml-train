@@ -16,6 +16,7 @@ pipeline with the features:
 import logging
 import os
 import platform
+import random
 from typing import Any, Dict
 
 import lightning as L
@@ -518,7 +519,7 @@ class Trainer:
                 training_batch["input_ids"].extend(gathered.tolist())
 
             # 2) choose branch *synchronously* across all ranks
-            rand_val = torch.rand(1, device=self.fabric.device)
+            rand_val = random.random()
             rand_val = self.fabric.broadcast(rand_val, src=0)
             do_meta = self.should_smlmt and (rand_val.item() < self.smlmt_hybrid_ratio)
             if do_meta:
