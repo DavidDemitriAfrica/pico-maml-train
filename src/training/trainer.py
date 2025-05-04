@@ -129,6 +129,7 @@ class Trainer:
             self.configs["smlmt"].enabled and self.configs["smlmt"].hybrid_ratio > 0.0
         )
         if self.should_smlmt:
+            self.inner_global_step = 0
             self.smlmt_hybrid_ratio = self.configs["smlmt"].hybrid_ratio
             self.smlmt_min_token_freq = self.configs["smlmt"].min_token_freq
             self.smlmt_max_token_freq = self.configs["smlmt"].max_token_freq
@@ -585,9 +586,13 @@ class Trainer:
                     )
                     grad_norm_sup = torch.norm(grads_w[unique_labels]).item()
                     self.fabric.log(
-                        "inner/grad_norm_sup", grad_norm_sup, step=batch_step
+                        "inner/grad_norm_sup",
+                        grad_norm_sup,
+                        step=self.inner_global_step,
                     )
-                    self.fabric.log("inner/loss_sup", loss_sup.item(), step=batch_step)
+                    self.fabric.log(
+                        "inner/loss_sup", loss_sup.item(), step=self.inner_global_step
+                    )
                     # — stash pre‐update slice for change‐norm logging —
                     W_pre = final.weight[unique_labels].clone()
                     with torch.no_grad():
@@ -598,14 +603,18 @@ class Trainer:
                         delta = final.weight[unique_labels] - W_pre
                         param_change = torch.norm(delta).item()
                         self.fabric.log(
-                            "inner/param_change_norm", param_change, step=batch_step
+                            "inner/param_change_norm",
+                            param_change,
+                            step=self.inner_global_step,
                         )
                     # log support accuracy
                     with torch.no_grad():
                         acc_sup = (logits_sup.argmax(dim=-1) == inv_idx).float().mean()
                     self.inner_acc_history.append(acc_sup.item())
-                    self.fabric.log("inner/acc_sup", acc_sup.item(), step=batch_step)
-
+                    self.fabric.log(
+                        "inner/acc_sup", acc_sup.item(), step=self.inner_global_step
+                    )
+                    self.inner_global_step += 1
                 # 6) query pass on adapted head
                 hidden_q, _ = self.model(query_ids, return_hidden=True)
                 feats_q = hidden_q[torch.arange(B), pos_q]
@@ -627,8 +636,26 @@ class Trainer:
                 )
 
                 # log query accuracy
+                # build a fast mapping from token ID → position in unique_labels
+                # unique_labels is 1D of length K with values in [0, vocab_size)
+                device = unique_labels.device
+                max_label = unique_labels.max().item()
+                # create a mapping table of size (max_label+1), default to -1
+                table = torch.full(
+                    (max_label + 1,), -1, dtype=torch.long, device=device
+                )
+                table[unique_labels] = torch.arange(
+                    unique_labels.size(0), device=device
+                )
+
+                # now map each query label; any label not in unique_labels will get -1 → crash early
+                idx_q = table[query_labels]
+                if (idx_q < 0).any():
+                    raise RuntimeError(
+                        f"Some query labels not in support set: {query_labels[idx_q<0]}"
+                    )
+
                 with torch.no_grad():
-                    idx_q = torch.bucketize(query_labels, unique_labels)
                     acc_q = (logits_q.argmax(dim=-1) == idx_q).float().mean()
                 self.query_acc_history.append(acc_q.item())
                 self.fabric.log("inner/acc_q", acc_q.item(), step=batch_step)
