@@ -568,13 +568,22 @@ class Trainer:
                     if initial_support_loss is None:
                         initial_support_loss = loss_sup.item()
                     # backward and manual SGD on those K rows
-                    grads_full = torch.autograd.grad(
-                        loss_sup, final.weight, retain_graph=True, allow_unused=True
-                    )[0]  # may be None if no grad flowed
-                    if grads_full is not None:
-                        grad_norm_sup = torch.norm(grads_full[unique_labels]).item()
-                    else:
-                        grad_norm_sup = 0.0
+                    grads_w, grads_b = torch.autograd.grad(
+                        loss_sup,
+                        [final.weight, final.bias],
+                        retain_graph=True,
+                        allow_unused=True,
+                    )
+                    # ensure non-None tensors
+                    grads_w = (
+                        grads_w
+                        if grads_w is not None
+                        else torch.zeros_like(final.weight)
+                    )
+                    grads_b = (
+                        grads_b if grads_b is not None else torch.zeros_like(final.bias)
+                    )
+                    grad_norm_sup = torch.norm(grads_w[unique_labels]).item()
                     self.fabric.log(
                         "inner/grad_norm_sup", grad_norm_sup, step=batch_step
                     )
@@ -585,8 +594,8 @@ class Trainer:
                     with torch.no_grad():
                         final = list(self.model.classifier_head.children())[-1]
                         W, b = final.weight, final.bias
-                        W[unique_labels] -= self.smlmt_inner_lr * W.grad[unique_labels]
-                        b[unique_labels] -= self.smlmt_inner_lr * b.grad[unique_labels]
+                        W[unique_labels] -= self.smlmt_inner_lr * grads_w[unique_labels]
+                        b[unique_labels] -= self.smlmt_inner_lr * grads_b[unique_labels]
                         delta = final.weight[unique_labels] - W_pre
                         param_change = torch.norm(delta).item()
                         self.fabric.log(
