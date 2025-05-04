@@ -151,14 +151,6 @@ class Trainer:
                 for p in self.model.classifier_head.parameters():
                     if p.dim() > 1:
                         nn.init.xavier_uniform_(p)
-            # ─── split head into body + final linear for fast K-way inner updates ───
-            self.head_body = nn.Sequential(
-                *list(self.model.classifier_head.children())[:-1]
-            ).to(self.fabric.device)
-            self.head_final = self.model.classifier_head[-1]
-            # freeze the body during inner loops
-            for p in self.head_body.parameters():
-                p.requires_grad_(False)
             # counters for logging
             self.smlmt_step_count = 0
             self.ar_step_count = 0
@@ -173,9 +165,6 @@ class Trainer:
                 if not n.startswith("classifier_head")
             ]
             self.outer_params = self.backbone_params + self.head_params
-            self.inner_optimizer = torch.optim.SGD(
-                self.head_params, lr=self.smlmt_inner_lr
-            )
         else:
             self.outer_params = list(self.model.parameters())
 
@@ -224,10 +213,7 @@ class Trainer:
                     self.outer_optimizer,
                     self.lr_scheduler,
                     self.initial_batch_step,
-                    inner_opt_state,
                 ) = resume_checkpoint
-                if self.should_smlmt and inner_opt_state is not None:
-                    self.inner_optimizer.load_state_dict(inner_opt_state)
             else:
                 self.initial_batch_step = 0
         else:
@@ -327,7 +313,6 @@ class Trainer:
             optimizer=self.outer_optimizer,
             lr_scheduler=self.lr_scheduler,
             tokenizer=self.tokenizer,
-            inner_optimizer=self.inner_optimizer if self.should_smlmt else None,
         )
 
         # Save Initial Evaluation Results
@@ -420,7 +405,6 @@ class Trainer:
                 optimizer=self.outer_optimizer,
                 lr_scheduler=self.lr_scheduler,
                 tokenizer=self.tokenizer,
-                inner_optimizer=self.inner_optimizer if self.should_smlmt else None,
             )
 
             # Final evaluation
@@ -792,9 +776,6 @@ class Trainer:
                         optimizer=self.outer_optimizer,
                         lr_scheduler=self.lr_scheduler,
                         tokenizer=self.tokenizer,
-                        inner_optimizer=self.inner_optimizer
-                        if self.should_smlmt
-                        else None,
                     )
                     if self.should_evaluate:
                         evaluation_results = run_evaluation(
