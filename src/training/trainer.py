@@ -568,8 +568,6 @@ class Trainer:
                     if initial_support_loss is None:
                         initial_support_loss = loss_sup.item()
                     # backward and manual SGD on those K rows
-                    self.fabric.backward(loss_sup, model=self.model)
-                    self.fabric.log("inner/loss_sup", loss_sup.item(), step=batch_step)
                     grads_full = torch.autograd.grad(
                         loss_sup, final.weight, retain_graph=True, allow_unused=True
                     )[0]  # may be None if no grad flowed
@@ -580,6 +578,8 @@ class Trainer:
                     self.fabric.log(
                         "inner/grad_norm_sup", grad_norm_sup, step=batch_step
                     )
+                    self.fabric.backward(loss_sup, model=self.model)
+                    self.fabric.log("inner/loss_sup", loss_sup.item(), step=batch_step)
                     # — stash pre‐update slice for change‐norm logging —
                     W_pre = final.weight[unique_labels].clone()
                     with torch.no_grad():
