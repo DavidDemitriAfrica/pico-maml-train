@@ -519,8 +519,11 @@ class Trainer:
             do_meta = self.should_smlmt and (rand_val.item() < self.smlmt_hybrid_ratio)
             if do_meta:
                 # 1) snapshot only the final-linear’s weights & biases
-                orig_W = self.head_final.weight.clone()
-                orig_b = self.head_final.bias.clone()
+                final = list(self.model.classifier_head.children())[-1]
+                W0 = final.weight.clone()
+                b0 = final.bias.clone()
+                initial_support_loss = None
+
                 B, L = _input_ids.shape
 
                 # 2) sample support & query positions
@@ -550,35 +553,42 @@ class Trainer:
 
                 # 5) inner-loop SGD on just those K rows of final-linear
                 for _ in range(self.smlmt_inner_steps):
-                    # clear grads on final
-                    if self.head_final.weight.grad is not None:
-                        self.head_final.weight.grad.zero_()
-                        self.head_final.bias.grad.zero_()
-
-                    # forward support through body → features
                     hidden_sup, _ = self.model(support_ids, return_hidden=True)
-                    feats_sup = self.head_body(hidden_sup)[
-                        torch.arange(B).unsqueeze(1), pos_sup
-                    ].reshape(-1, self.head_body[-1].out_features)  # (B*k, hidden_dim)
+                    feats_sup = hidden_sup[torch.arange(B).unsqueeze(1), pos_sup]
+                    feats_sup = feats_sup.reshape(-1, feats_sup.size(-1))
 
-                    # slice out the K rows
-                    Wk = self.head_final.weight[unique_labels]
-                    bk = self.head_final.bias[unique_labels]
-                    logits_sup = F.linear(feats_sup, Wk, bk)  # (B*k, K)
+                    # full head logits, then restrict to K classes
+                    logits_sup_all = self.model.classifier_head(feats_sup)
+                    flat_labels, inv_idx = support_labels.view(-1), None
+                    unique_labels, inv_idx = torch.unique(
+                        flat_labels, return_inverse=True
+                    )
+                    logits_sup = logits_sup_all[:, unique_labels]
+
                     loss_sup = F.cross_entropy(logits_sup, inv_idx)
+                    if initial_support_loss is None:
+                        initial_support_loss = loss_sup.item()
+                    # backward and manual SGD on those K rows
+                    self.model.classifier_head.zero_grad()
                     loss_sup.backward()
-
-                    # manual SGD step on those K rows
+                    self.fabric.log("inner/loss_sup", loss_sup.item(), step=batch_step)
+                    grad_sup = final.weight.grad[unique_labels]
+                    grad_norm_sup = torch.norm(grad_sup).item()
+                    self.fabric.log(
+                        "inner/grad_norm_sup", grad_norm_sup, step=batch_step
+                    )
+                    # — stash pre‐update slice for change‐norm logging —
+                    W_pre = final.weight[unique_labels].clone()
                     with torch.no_grad():
-                        grad_W = self.head_final.weight.grad[unique_labels]
-                        grad_b = self.head_final.bias.grad[unique_labels]
-                        self.head_final.weight[unique_labels] -= (
-                            self.smlmt_inner_lr * grad_W
+                        final = list(self.model.classifier_head.children())[-1]
+                        W, b = final.weight, final.bias
+                        W[unique_labels] -= self.smlmt_inner_lr * W.grad[unique_labels]
+                        b[unique_labels] -= self.smlmt_inner_lr * b.grad[unique_labels]
+                        delta = final.weight[unique_labels] - W_pre
+                        param_change = torch.norm(delta).item()
+                        self.fabric.log(
+                            "inner/param_change_norm", param_change, step=batch_step
                         )
-                        self.head_final.bias[unique_labels] -= (
-                            self.smlmt_inner_lr * grad_b
-                        )
-
                     # log support accuracy
                     with torch.no_grad():
                         acc_sup = (logits_sup.argmax(dim=-1) == inv_idx).float().mean()
@@ -587,15 +597,23 @@ class Trainer:
 
                 # 6) query pass on adapted head
                 hidden_q, _ = self.model(query_ids, return_hidden=True)
-                feats_q = self.head_body(hidden_q)[
-                    torch.arange(B), pos_q
-                ]  # (B, hidden_dim)
-                Wk = self.head_final.weight[unique_labels]
-                bk = self.head_final.bias[unique_labels]
-                logits_q = F.linear(feats_q, Wk, bk)  # (B, K)
-                loss = F.cross_entropy(
-                    logits_q, torch.bucketize(query_labels, unique_labels)
+                feats_q = hidden_q[torch.arange(B), pos_q]
+                logits_q_all = self.model.classifier_head(feats_q)
+                idx_q = torch.bucketize(query_labels, unique_labels)
+                logits_q = logits_q_all[:, unique_labels]
+                loss = F.cross_entropy(logits_q, idx_q)
+
+                # — log total head shift after all inner updates —
+                with torch.no_grad():
+                    total_shift = torch.norm(final.weight - W0).item()
+                self.fabric.log("inner/total_param_shift", total_shift, step=batch_step)
+
+                # — log support‐loss improvement from first→last inner step —
+                improvement = (initial_support_loss or 0.0) - loss_sup.item()
+                self.fabric.log(
+                    "inner/support_loss_improvement", improvement, step=batch_step
                 )
+
                 # log query accuracy
                 with torch.no_grad():
                     idx_q = torch.bucketize(query_labels, unique_labels)
@@ -611,10 +629,12 @@ class Trainer:
                 )
 
                 # 8) restore original final-linear before outer step
-                with torch.no_grad():
-                    self.head_final.weight.copy_(orig_W)
-                    self.head_final.bias.copy_(orig_b)
 
+                with torch.no_grad():
+                    final = list(self.model.classifier_head.children())[-1]
+                    final.weight.copy_(W0)
+                    final.bias.copy_(b0)
+                    # NOTE: this is a bit of a hack to get the model to update the weights
             else:
                 # --- Autoregressive LM branch ---
                 input_ids = _input_ids[:, :-1]
