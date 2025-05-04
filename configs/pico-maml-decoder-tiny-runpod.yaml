@@ -1,5 +1,7 @@
 # runpod-pico-maml-decoder-tiny.yaml
 
+# to do: run this morning
+
 checkpointing:
   # still needs a run_name for logs, but we won’t save anything
   run_name: "pico-maml-decoder-tiny-runpod-20"
