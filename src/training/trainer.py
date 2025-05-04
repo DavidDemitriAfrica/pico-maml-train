@@ -569,7 +569,9 @@ class Trainer:
                         initial_support_loss = loss_sup.item()
                     # backward and manual SGD on those K rows
                     self.model.classifier_head.zero_grad()
-                    loss_sup.backward()
+                    self.model.classifier_head.zero_grad()
+                    # backward support loss via Fabric so precision/strategy hooks fire
+                    self.fabric.backward(loss_sup, model=self.model)
                     self.fabric.log("inner/loss_sup", loss_sup.item(), step=batch_step)
                     grad_sup = final.weight.grad[unique_labels]
                     grad_norm_sup = torch.norm(grad_sup).item()
