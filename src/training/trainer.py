@@ -549,10 +549,8 @@ class Trainer:
                 query_ids[torch.arange(B), pos_q] = mask_id
 
                 for inner_step in range(self.smlmt_inner_steps):
-                    for p in self.backbone_params:
-                        p.requires_grad_(False)
                     # zero grad on _inner_ optimizer up front
-                    self.inner_optimizer.zero_grad()
+                    # self.inner_optimizer.zero_grad()
                     # freeze transformer weights
                     hidden_sup, _ = self.model(support_ids, return_hidden=True)
                     # make sure hidden_sup is the same dtype as the head’s weights:
@@ -577,21 +575,14 @@ class Trainer:
                     self.fabric.log("inner/acc_sup", acc_sup.item(), step=batch_step)
 
                     self.fabric.backward(loss_sup, model=self.model)
-                    self.inner_optimizer.step()
-                    for p in self.backbone_params:
-                        p.requires_grad_(True)
-                    for name, p in self.model.classifier_head.named_parameters():
-                        if p.grad is None:
-                            self.log(
-                                f"⚠️ NO grad for head param: {name}",
-                                level=logging.WARNING,
-                            )
-                        else:
-                            grad_norm = p.grad.norm().item()
-                            self.log(
-                                f"Head param '{name}' grad norm = {grad_norm:.3e}",
-                                level=logging.INFO,
-                            )
+                    # self.inner_optimizer.step()
+                    with torch.no_grad():
+                        for p in self.model.classifier_head.parameters():
+                            if p.grad is not None:
+                                p.data -= self.smlmt_inner_lr * p.grad
+                    for p in self.model.classifier_head.parameters():
+                        p.grad = None
+
                 # 5) compute query loss on the *adapted* head
 
                 hidden_q, _ = self.model(query_ids, return_hidden=True)
@@ -599,6 +590,12 @@ class Trainer:
                 logits_q = self.model.classifier_head(hidden_q)[
                     torch.arange(B), pos_q, :
                 ]
+                # ── compute & log query accuracy ────────────────────────────────────────
+                with torch.no_grad():
+                    preds_q = logits_q.argmax(dim=-1)  # (B,)
+                    acc_q = (preds_q == query_labels).float().mean()
+                self.query_acc_history.append(acc_q.item())
+                self.fabric.log("inner/acc_q", acc_q.item(), step=batch_step)
                 loss = F.cross_entropy(logits_q, query_labels)
 
             else:
@@ -919,10 +916,10 @@ class Trainer:
             mask_id = self.tokenizer.mask_token_id
             pad_id = self.tokenizer.pad_token_id
             if mask_id is None or mask_id == pad_id:
-                self.log(
-                    "⚠️ Using pad/eos as mask token—no true mask token defined",
-                    level=logging.WARNING,
-                )
+                self.tokenizer.add_special_tokens({"mask_token": "[MASK]"})
+                # resize the model’s token‐embeddings to pick up the new special token
+                self.model.resize_token_embeddings(len(self.tokenizer))
+                mask_id = self.tokenizer.mask_token_id
             if grad_norm == 0.0:
                 self.log(
                     "⚠️ Head gradients zero—inner loop may not be updating the head",
