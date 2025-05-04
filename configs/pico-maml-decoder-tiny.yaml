@@ -31,7 +31,7 @@ training:
   fabric:
     precision: "bf16-mixed"
     devices: 4              # use 4 GPUs on this node
-    num_nodes: 1
+    num_nodes: 4
 
 smlmt:
   enabled: true
