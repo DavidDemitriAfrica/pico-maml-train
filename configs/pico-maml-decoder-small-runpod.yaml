@@ -4,12 +4,14 @@
 
 checkpointing:
   # still needs a run_name for logs, but we won’t save anything
-  run_name: "pico-maml-decoder-small-runpod-2"
-  save_to_hf: true         # no pushes to HuggingFace
-  auto_resume: true        # don’t try to resume from disk
+  run_name: "pico-maml-decoder-small-runpod-3"
+  save_to_hf: false         # no pushes to HuggingFace
+  auto_resume: false        # don’t try to resume from disk
   save_every_n_steps: 100     # never checkpoint
   learning_dynamics:
     batch_size: 128
+  hf_checkpoint:
+    repo_id: "davidafrica/pico-maml-decoder-small"
 
 model:
   d_model: 384
