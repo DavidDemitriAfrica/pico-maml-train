@@ -172,6 +172,20 @@ class Trainer:
             self.configs["training"], raw_outer_opt
         )
 
+        # 3) DeepSpeed only supports ONE optimizer at setup time.
+        #    Always wrap model + outer optimizer only.
+        #    Move the tokenizer to initialize before the model is wrapped.
+        self.tokenizer = initialize_tokenizer(data_config=self.configs["data"])
+
+        # ── Ensure a real [MASK] token is present ───────────────────────────────
+        if self.tokenizer.mask_token_id is None:
+            self.tokenizer.add_special_tokens({"mask_token": "[MASK]"})
+            # expand the model’s embeddings once to pick up the new token
+            self.model.resize_token_embeddings(len(self.tokenizer))
+        self.mask_id = self.tokenizer.mask_token_id
+
+        self.model, self.outer_optimizer = self.fabric.setup(self.model, raw_outer_opt)
+
         # Setup HuggingFace Checkpointing
         if self.configs["checkpointing"].save_to_hf:
             initialize_hf_checkpointing(
@@ -234,17 +248,6 @@ class Trainer:
         self.train_dataloader = self.fabric.setup_dataloaders(
             self.train_dataloader, use_distributed_sampler=True
         )
-
-        self.tokenizer = initialize_tokenizer(data_config=self.configs["data"])
-
-        # ── Ensure a real [MASK] token is present ───────────────────────────────
-        if self.tokenizer.mask_token_id is None:
-            self.tokenizer.add_special_tokens({"mask_token": "[MASK]"})
-            # expand the model’s embeddings once to pick up the new token
-            self.model.resize_token_embeddings(len(self.tokenizer))
-        self.mask_id = self.tokenizer.mask_token_id
-
-        self.model, self.outer_optimizer = self.fabric.setup(self.model, raw_outer_opt)
 
         # NOTE: We may need to fast-forward the iterator to the correct step so that we can
         # continue from the correct batch of data we would have seen had training not
