@@ -530,8 +530,8 @@ class Trainer:
                 # 2) sample support & query positions
                 k = self.smlmt_support_size
                 pos_sup = torch.randint(1, L - 1, (B, k), device=_input_ids.device)
-                pos_q = torch.randint(1, L - 1, (B,), device=_input_ids.device)
-
+                rand_cols = torch.randint(0, k, (B,), device=_input_ids.device)
+                pos_q = pos_sup[torch.arange(B, device=_input_ids.device), rand_cols]
                 # 3) build support & query inputs
                 support_ids = _input_ids.clone()
                 mask_id = (
