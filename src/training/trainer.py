@@ -551,18 +551,13 @@ class Trainer:
                 classes = pool[perm[:N]]
 
                 # 2) sample two mask‐positions per sequence: support & query
-                k = self.smlmt_support_size
                 pos_sup = torch.randint(
-                    1, L - 1, (B, k), device=_input_ids.device
+                    1, L - 1, (B, K), device=_input_ids.device
                 )  # (B,k)
                 pos_q = torch.randint(1, L - 1, (B,), device=_input_ids.device)
 
                 support_ids = _input_ids.clone()
                 mask_id = self.mask_id
-                if mask_id is None:
-                    # e.g. use pad_token_id or eos_token_id
-                    mask_id = self.tokenizer.pad_token_id or self.tokenizer.eos_token_id
-
                 support_labels = support_ids[
                     torch.arange(B).unsqueeze(1), pos_sup
                 ].clone()  # (B,k)
@@ -572,6 +567,7 @@ class Trainer:
                 query_labels = query_ids[torch.arange(B), pos_q].clone()
                 query_ids[torch.arange(B), pos_q] = mask_id
 
+                inner_grad_norms = []
                 for inner_step in range(self.smlmt_inner_steps):
                     for p in self.backbone_params:
                         p.requires_grad_(False)
@@ -591,11 +587,14 @@ class Trainer:
                     logits_sup = logits_sup.contiguous().view(B * K, N)
                     support_labels = support_labels.view(B * K)
                     # remap labels into [0..N-1]
-                    label_map = {c.item(): i for i, c in enumerate(classes)}
-                    support_labels = torch.tensor(
-                        [label_map[label.item()] for label in support_labels],
+                    mapper = torch.full(
+                        (self.model.config.vocab_size,),
+                        -1,
                         device=_input_ids.device,
+                        dtype=torch.long,
                     )
+                    mapper[classes] = torch.arange(N, device=_input_ids.device)
+                    support_labels = mapper[support_labels]
                     loss_sup = F.cross_entropy(logits_sup, support_labels)
                     # use Fabric so on multi‐GPU we sync grads if desired
                     # ——— compute support accuracy ———
@@ -609,20 +608,27 @@ class Trainer:
 
                     self.fabric.backward(loss_sup, model=self.model)
                     self.inner_optimizer.step()
-                    for p in self.backbone_params:
-                        p.requires_grad_(True)
-                    for name, p in self.model.classifier_head.named_parameters():
-                        if p.grad is None:
-                            self.log(
-                                f"⚠️ NO grad for head param: {name}",
-                                level=logging.WARNING,
-                            )
-                        else:
-                            grad_norm = p.grad.norm().item()
-                            self.log(
-                                f"Head param '{name}' grad norm = {grad_norm:.3e}",
-                                level=logging.INFO,
-                            )
+                    grads = [
+                        p.grad
+                        for p in self.model.classifier_head.parameters()
+                        if p.grad is not None
+                    ]
+                    if grads:
+                        # record the mean grad norm for this inner step
+                        norms = torch.stack([g.norm() for g in grads])
+                        inner_grad_norms.append(norms.mean().item())
+                if inner_grad_norms:
+                    mean_over_inner = sum(inner_grad_norms) / len(inner_grad_norms)
+                    std_over_inner = (
+                        sum((x - mean_over_inner) ** 2 for x in inner_grad_norms)
+                        / len(inner_grad_norms)
+                    ) ** 0.5
+                    self.fabric.log(
+                        "inner/head_grad_norm_mean", mean_over_inner, step=batch_step
+                    )
+                    self.fabric.log(
+                        "inner/head_grad_norm_std", std_over_inner, step=batch_step
+                    )
                 # 5) compute query loss on the *adapted* head
 
                 hidden_q, _ = self.model(query_ids, return_hidden=True)
@@ -638,7 +644,10 @@ class Trainer:
                     device=_input_ids.device,
                 )
                 loss = F.cross_entropy(logits_q, query_labels)
-
+                with torch.no_grad():
+                    acc_q = (logits_q.argmax(dim=-1) == query_labels).float().mean()
+                self.query_acc_history.append(acc_q.item())
+                self.fabric.log("inner/acc_q", acc_q.item(), step=batch_step)
             else:
                 # --- Autoregressive LM branch ---
                 input_ids = _input_ids[:, :-1]
