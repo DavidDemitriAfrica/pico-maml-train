@@ -29,9 +29,10 @@ class SMLMTConfig:
 
     enabled: bool = False
     hybrid_ratio: float = 0.6
-    min_token_freq: int = 30
-    max_token_freq: int = 100
+    min_token_freq: int = 4
+    max_token_freq: int = 10000
     inner_steps: int = 10
     inner_lr: float = 0.001
-    support_size: int = 5
+    k_shot: int = 4
+    n_way: int = 32
     classifier_head: ClassifierHeadConfig = field(default_factory=ClassifierHeadConfig)

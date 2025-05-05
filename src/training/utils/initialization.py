@@ -327,8 +327,18 @@ def initialize_tokenizer(data_config: DataConfig):
     Returns:
         AutoTokenizer: A HuggingFace tokenizer instance.
     """
-
-    return AutoTokenizer.from_pretrained(data_config.tokenizer.name)
+    tok = AutoTokenizer.from_pretrained(data_config.tokenizer.name)
+    # 1) add the mask token
+    num_added = tok.add_special_tokens({"mask_token": "[MASK]"})
+    if num_added > 0:
+        # 2) bump your config so that model gets built with the right vocab_size
+        data_config.model.vocab_size = len(tok)
+    else:
+        # (optional) warn if something weird happened
+        logging.getLogger("pico-train").warning(
+            "add_special_tokens returned 0; `[MASK]` may already exist or failed to add"
+        )
+    return tok
 
 
 def initialize_dataloader(

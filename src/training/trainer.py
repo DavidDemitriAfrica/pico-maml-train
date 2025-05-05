@@ -109,6 +109,9 @@ class Trainer:
             fabric=self.fabric,
         )
 
+        self.tokenizer = initialize_tokenizer(data_config=self.configs["data"])
+        self.mask_id = self.tokenizer.mask_token_id
+        self.configs["model"].vocab_size = len(self.tokenizer)
         # Setup Model
         self.model = initialize_model(model_config=self.configs["model"])
 
@@ -127,7 +130,8 @@ class Trainer:
             self.smlmt_max_token_freq = self.configs["smlmt"].max_token_freq
             self.smlmt_inner_steps = self.configs["smlmt"].inner_steps
             self.smlmt_inner_lr = self.configs["smlmt"].inner_lr
-            self.smlmt_support_size = self.configs["smlmt"].support_size
+            self.smlmt_n_way = self.configs["smlmt"].n_way
+            self.smlmt_k_shot = self.configs["smlmt"].k_shot
             head_cfg = self.configs["smlmt"].classifier_head
             layers = []
             in_dim = self.model.config.d_model
@@ -229,6 +233,23 @@ class Trainer:
             return_fast_forward_steps=True,
         )
 
+        if self.should_smlmt:
+            # — build valid‐class pool based on token frequency thresholds —
+            from collections import Counter
+
+            counter = Counter()
+            for ex in self.train_dataset:
+                counter.update(ex["input_ids"])
+            V = self.model.config.vocab_size
+            freqs = torch.tensor(
+                [counter[i] for i in range(V)],
+                dtype=torch.long,
+                device=self.fabric.device,
+            )
+            m, M = self.smlmt_min_token_freq, self.smlmt_max_token_freq
+            mask = (freqs >= m) & (freqs <= M)
+            self.smlmt_valid_classes = torch.nonzero(mask, as_tuple=False).squeeze(1)
+
         self.train_dataloader = initialize_dataloader(
             data_config=self.configs["data"],
             training_config=self.configs["training"],
@@ -238,8 +259,6 @@ class Trainer:
         self.train_dataloader = self.fabric.setup_dataloaders(
             self.train_dataloader, use_distributed_sampler=True
         )
-
-        self.tokenizer = initialize_tokenizer(data_config=self.configs["data"])
 
         # NOTE: We may need to fast-forward the iterator to the correct step so that we can
         # continue from the correct batch of data we would have seen had training not
@@ -525,6 +544,11 @@ class Trainer:
                     for k, v in self.model.classifier_head.state_dict().items()
                 }
                 B, L = _input_ids.size()
+                N, K = self.smlmt_n_way, self.smlmt_k_shot
+                # 2) sample N-way classes from the valid pool
+                pool = self.smlmt_valid_classes
+                perm = torch.randperm(pool.size(0), device=_input_ids.device)
+                classes = pool[perm[:N]]
 
                 # 2) sample two mask‐positions per sequence: support & query
                 k = self.smlmt_support_size
@@ -534,7 +558,7 @@ class Trainer:
                 pos_q = torch.randint(1, L - 1, (B,), device=_input_ids.device)
 
                 support_ids = _input_ids.clone()
-                mask_id = self.tokenizer.mask_token_id
+                mask_id = self.mask_id
                 if mask_id is None:
                     # e.g. use pad_token_id or eos_token_id
                     mask_id = self.tokenizer.pad_token_id or self.tokenizer.eos_token_id
@@ -558,13 +582,20 @@ class Trainer:
                     # make sure hidden_sup is the same dtype as the head’s weights:
                     head_dtype = next(self.model.classifier_head.parameters()).dtype
                     hidden_sup = hidden_sup.to(head_dtype)
+                    # project only onto our N classes
                     logits_sup = self.model.classifier_head(hidden_sup)
-                    logits_sup = logits_sup[torch.arange(B).unsqueeze(1), pos_sup, :]
-                    # flatten to (B*k, V) and (B*k,) for cross‐entropy:
-                    B, k, V = logits_sup.shape
-                    logits_sup = logits_sup.view(B * k, V)
-                    support_labels = support_labels.view(B * k)
-
+                    logits_sup = logits_sup[torch.arange(B).unsqueeze(1), pos_sup, :][
+                        :, :, classes
+                    ]
+                    # flatten to (B*K, N)
+                    logits_sup = logits_sup.contiguous().view(B * K, N)
+                    support_labels = support_labels.view(B * K)
+                    # remap labels into [0..N-1]
+                    label_map = {c.item(): i for i, c in enumerate(classes)}
+                    support_labels = torch.tensor(
+                        [label_map[label.item()] for label in support_labels],
+                        device=_input_ids.device,
+                    )
                     loss_sup = F.cross_entropy(logits_sup, support_labels)
                     # use Fabric so on multi‐GPU we sync grads if desired
                     # ——— compute support accuracy ———
@@ -596,9 +627,16 @@ class Trainer:
 
                 hidden_q, _ = self.model(query_ids, return_hidden=True)
                 hidden_q = hidden_q.to(head_dtype)
-                logits_q = self.model.classifier_head(hidden_q)[
-                    torch.arange(B), pos_q, :
-                ]
+                # project only onto N classes
+                logits_q = self.model.classifier_head(hidden_q)[:, :, classes]
+                logits_q = logits_q[torch.arange(B), pos_q, :]  # (B, N)
+                # remap query labels into [0..N-1]
+                query_labels = query_labels.to(_input_ids.device)
+                label_map = {c.item(): i for i, c in enumerate(classes)}
+                query_labels = torch.tensor(
+                    [label_map[label.item()] for label in query_labels],
+                    device=_input_ids.device,
+                )
                 loss = F.cross_entropy(logits_q, query_labels)
 
             else:

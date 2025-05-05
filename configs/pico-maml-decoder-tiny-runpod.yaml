@@ -45,8 +45,8 @@ smlmt:
     hidden_dim: 128
     dropout: 0.1
     init_method: "xavier"
-  support_size: 10
-
+  k_shot: 4
+  n_way: 32
 data:
   dataset:
     name: "pico-lm/pretokenized-dolma"
