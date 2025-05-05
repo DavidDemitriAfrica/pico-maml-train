@@ -316,7 +316,7 @@ def initialize_dataset(
         return dataset
 
 
-def initialize_tokenizer(data_config: DataConfig, model_config: ModelConfig):
+def initialize_tokenizer(data_config: DataConfig):
     """Initialize the tokenizer for text processing.
 
     This function can be extended to include custom tokenization logic.
@@ -327,11 +327,8 @@ def initialize_tokenizer(data_config: DataConfig, model_config: ModelConfig):
     Returns:
         AutoTokenizer: A HuggingFace tokenizer instance.
     """
-    tok = AutoTokenizer.from_pretrained(data_config.tokenizer.name)
-    num_added = tok.add_special_tokens({"mask_token": "[MASK]"})
-    if num_added > 0:
-        model_config.vocab_size = len(tok)
-    return tok
+
+    return AutoTokenizer.from_pretrained(data_config.tokenizer.name)
 
 
 def initialize_dataloader(

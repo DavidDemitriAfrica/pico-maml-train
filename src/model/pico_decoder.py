@@ -531,49 +531,6 @@ class PicoDecoder(nn.Module):
 
         return logits, cached_key_values
 
-    def resize_token_embeddings(self, new_vocab_size: int):
-        """
-        Expand input embeddings (embedding_proj) and output head (de_embedding_proj)
-        to accommodate the new vocab size.
-        """
-        # 1) Input embedding
-        old_emb = self.embedding_proj  # nn.Embedding(old_vocab, dim)
-        old_vocab, dim = old_emb.weight.shape
-        new_emb = nn.Embedding(new_vocab_size, dim)
-
-        # DEBUG: print shapes before copy
-        print(f"[resize] old_emb.weight.shape = {old_emb.weight.shape}")
-        print(f"[resize] new_emb.weight.shape = {new_emb.weight.shape}")
-        try:
-            # copy old weights into the first old_vocab rows
-            new_emb.weight.data[:old_vocab, :].copy_(old_emb.weight.data)
-        except Exception:
-            print("🔥 ERROR copying input embeddings:")
-            print("   slice shape:", new_emb.weight.data[:old_vocab, :].shape)
-            print("   old data shape:", old_emb.weight.data.shape)
-            raise
-
-        self.embedding_proj = new_emb
-
-        # 2) Output projection
-        old_out = self.de_embedding_proj  # nn.Linear(dim, old_vocab)
-        w = old_out.weight  # shape: (old_vocab, dim)
-        new_out = nn.Linear(dim, new_vocab_size, bias=False)
-
-        # DEBUG: print shapes before copy
-        print(f"[resize] old_out.weight.shape = {w.shape}")
-        print(f"[resize] new_out.weight.shape = {new_out.weight.shape}")
-        try:
-            # copy old output weights into the first old_vocab rows
-            new_out.weight.data[:old_vocab, :].copy_(w.data)
-        except Exception:
-            print("🔥 ERROR copying output projection:")
-            print("   slice shape:", new_out.weight.data[:old_vocab, :].shape)
-            print("   old data shape:", w.data.shape)
-            raise
-
-        self.de_embedding_proj = new_out
-
 
 ########################################################
 #
