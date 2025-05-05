@@ -16,7 +16,6 @@ pipeline with the features:
 import logging
 import os
 import platform
-import random
 from typing import Any, Dict
 
 import lightning as L
@@ -519,9 +518,9 @@ class Trainer:
                 training_batch["input_ids"].extend(gathered.tolist())
 
             # 2) choose branch *synchronously* across all ranks
-            rand_val = random.random()
-            rand_val = self.fabric.broadcast(rand_val, src=0)
-            do_meta = self.should_smlmt and (rand_val < self.smlmt_hybrid_ratio)
+            rand_t = torch.rand((), device=self.fabric.device)  # a 0-dim Tensor
+            rand_t = self.fabric.broadcast(rand_t, src=0)  # sync it across all ranks
+            do_meta = self.should_smlmt and (rand_t.item() < self.smlmt_hybrid_ratio)
             if do_meta:
                 # 1) snapshot only the final-linear’s weights & biases
                 final = list(self.model.classifier_head.children())[-1]
