@@ -608,6 +608,8 @@ class Trainer:
 
                     self.fabric.backward(loss_sup, model=self.model)
                     self.inner_optimizer.step()
+                    for p in self.backbone_params:
+                        p.requires_grad_(True)
                     grads = [
                         p.grad
                         for p in self.model.classifier_head.parameters()
