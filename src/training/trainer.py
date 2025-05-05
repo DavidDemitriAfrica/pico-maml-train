@@ -109,6 +109,13 @@ class Trainer:
             fabric=self.fabric,
         )
 
+        self.tokenizer = initialize_tokenizer(
+            self.configs["data"], self.configs["model"]
+        )
+
+        # finally stash the id for use in masking
+        self.mask_id = self.tokenizer.mask_token_id
+
         # Setup Model
         self.model = initialize_model(model_config=self.configs["model"])
 
@@ -122,6 +129,7 @@ class Trainer:
             self.configs["smlmt"].enabled and self.configs["smlmt"].hybrid_ratio > 0.0
         )
         if self.should_smlmt:
+            self.inner_global_step = 0
             self.smlmt_hybrid_ratio = self.configs["smlmt"].hybrid_ratio
             self.smlmt_min_token_freq = self.configs["smlmt"].min_token_freq
             self.smlmt_max_token_freq = self.configs["smlmt"].max_token_freq
@@ -158,9 +166,6 @@ class Trainer:
                 if not n.startswith("classifier_head")
             ]
             self.outer_params = self.backbone_params + self.head_params
-            self.inner_optimizer = torch.optim.SGD(
-                self.head_params, lr=self.smlmt_inner_lr
-            )
         else:
             self.outer_params = list(self.model.parameters())
 
@@ -174,6 +179,8 @@ class Trainer:
 
         # 3) DeepSpeed only supports ONE optimizer at setup time.
         #    Always wrap model + outer optimizer only.
+        #    Move the tokenizer to initialize before the model is wrapped.
+
         self.model, self.outer_optimizer = self.fabric.setup(self.model, raw_outer_opt)
 
         # Setup HuggingFace Checkpointing
@@ -207,10 +214,7 @@ class Trainer:
                     self.outer_optimizer,
                     self.lr_scheduler,
                     self.initial_batch_step,
-                    inner_opt_state,
                 ) = resume_checkpoint
-                if self.should_smlmt and inner_opt_state is not None:
-                    self.inner_optimizer.load_state_dict(inner_opt_state)
             else:
                 self.initial_batch_step = 0
         else:
@@ -238,8 +242,6 @@ class Trainer:
         self.train_dataloader = self.fabric.setup_dataloaders(
             self.train_dataloader, use_distributed_sampler=True
         )
-
-        self.tokenizer = initialize_tokenizer(data_config=self.configs["data"])
 
         # NOTE: We may need to fast-forward the iterator to the correct step so that we can
         # continue from the correct batch of data we would have seen had training not
@@ -312,7 +314,6 @@ class Trainer:
             optimizer=self.outer_optimizer,
             lr_scheduler=self.lr_scheduler,
             tokenizer=self.tokenizer,
-            inner_optimizer=self.inner_optimizer if self.should_smlmt else None,
         )
 
         # Save Initial Evaluation Results
@@ -405,7 +406,6 @@ class Trainer:
                 optimizer=self.outer_optimizer,
                 lr_scheduler=self.lr_scheduler,
                 tokenizer=self.tokenizer,
-                inner_optimizer=self.inner_optimizer if self.should_smlmt else None,
             )
 
             # Final evaluation
@@ -491,6 +491,9 @@ class Trainer:
         #
         ###############################################################
 
+        accum = self.configs["training"].optimization.gradient_accumulation_steps
+        local_accum = 0
+
         for sub_batch_step, sub_batch in enumerate(
             self.train_iterator, start=initial_sub_batch_step
         ):
@@ -515,120 +518,187 @@ class Trainer:
                 training_batch["input_ids"].extend(gathered.tolist())
 
             # 2) choose branch *synchronously* across all ranks
-            rand_val = torch.rand(1, device=self.fabric.device)
-            rand_val = self.fabric.broadcast(rand_val, src=0)
-            do_meta = self.should_smlmt and (rand_val.item() < self.smlmt_hybrid_ratio)
+            rand_t = torch.rand((), device=self.fabric.device)  # a 0-dim Tensor
+            rand_t = self.fabric.broadcast(rand_t, src=0)  # sync it across all ranks
+            do_meta = self.should_smlmt and (rand_t.item() < self.smlmt_hybrid_ratio)
             if do_meta:
-                # 1) snapshot head
-                orig_head = {
-                    k: v.clone()
-                    for k, v in self.model.classifier_head.state_dict().items()
-                }
-                B, L = _input_ids.size()
+                # 1) snapshot only the final-linear’s weights & biases
+                final = list(self.model.classifier_head.children())[-1]
+                W0 = final.weight.clone()
+                b0 = final.bias.clone()
+                initial_support_loss = None
 
-                # 2) sample two mask‐positions per sequence: support & query
+                B, L = _input_ids.shape
+
+                # 2) sample support & query positions
                 k = self.smlmt_support_size
-                pos_sup = torch.randint(
-                    1, L - 1, (B, k), device=_input_ids.device
-                )  # (B,k)
-                pos_q = torch.randint(1, L - 1, (B,), device=_input_ids.device)
-
+                pos_sup = torch.randint(1, L - 1, (B, k), device=_input_ids.device)
+                rand_cols = torch.randint(0, k, (B,), device=_input_ids.device)
+                pos_q = pos_sup[torch.arange(B, device=_input_ids.device), rand_cols]
+                # 3) build support & query inputs
                 support_ids = _input_ids.clone()
-                mask_id = self.tokenizer.mask_token_id
-                if mask_id is None:
-                    # e.g. use pad_token_id or eos_token_id
-                    mask_id = self.tokenizer.pad_token_id or self.tokenizer.eos_token_id
-
+                mask_id = (
+                    self.mask_id
+                    or self.tokenizer.pad_token_id
+                    or self.tokenizer.eos_token_id
+                )
                 support_labels = support_ids[
                     torch.arange(B).unsqueeze(1), pos_sup
-                ].clone()  # (B,k)
+                ].clone()
                 support_ids[torch.arange(B).unsqueeze(1), pos_sup] = mask_id
 
                 query_ids = _input_ids.clone()
                 query_labels = query_ids[torch.arange(B), pos_q].clone()
                 query_ids[torch.arange(B), pos_q] = mask_id
 
-                for inner_step in range(self.smlmt_inner_steps):
-                    for p in self.backbone_params:
-                        p.requires_grad_(False)
-                    # zero grad on _inner_ optimizer up front
-                    self.inner_optimizer.zero_grad()
-                    # freeze transformer weights
+                # 4) flatten labels → get unique K classes + inverse idx
+                support_flat = support_labels.view(-1)
+                unique_labels, inv_idx = torch.unique(support_flat, return_inverse=True)
+
+                # 5) inner-loop SGD on just those K rows of final-linear
+                for _ in range(self.smlmt_inner_steps):
                     hidden_sup, _ = self.model(support_ids, return_hidden=True)
-                    # make sure hidden_sup is the same dtype as the head’s weights:
-                    head_dtype = next(self.model.classifier_head.parameters()).dtype
-                    hidden_sup = hidden_sup.to(head_dtype)
-                    logits_sup = self.model.classifier_head(hidden_sup)
-                    logits_sup = logits_sup[torch.arange(B).unsqueeze(1), pos_sup, :]
-                    # flatten to (B*k, V) and (B*k,) for cross‐entropy:
-                    B, k, V = logits_sup.shape
-                    logits_sup = logits_sup.view(B * k, V)
-                    support_labels = support_labels.view(B * k)
+                    feats_sup = hidden_sup[torch.arange(B).unsqueeze(1), pos_sup]
+                    feats_sup = feats_sup.reshape(-1, feats_sup.size(-1))
+                    feats_sup = feats_sup.to(final.weight.dtype)
+                    logits_sup_all = self.model.classifier_head(feats_sup)
+                    flat_labels, inv_idx = support_labels.view(-1), None
+                    unique_labels, inv_idx = torch.unique(
+                        flat_labels, return_inverse=True
+                    )
+                    logits_sup = logits_sup_all[:, unique_labels]
 
-                    loss_sup = F.cross_entropy(logits_sup, support_labels)
-                    # use Fabric so on multi‐GPU we sync grads if desired
-                    # ——— compute support accuracy ———
+                    loss_sup = F.cross_entropy(logits_sup, inv_idx)
+                    if initial_support_loss is None:
+                        initial_support_loss = loss_sup.item()
+                    # backward and manual SGD on those K rows
+                    grads_w, grads_b = torch.autograd.grad(
+                        loss_sup,
+                        [final.weight, final.bias],
+                        retain_graph=True,
+                        allow_unused=True,
+                    )
+                    # ensure non-None tensors
+                    grads_w = (
+                        grads_w
+                        if grads_w is not None
+                        else torch.zeros_like(final.weight)
+                    )
+                    grads_b = (
+                        grads_b if grads_b is not None else torch.zeros_like(final.bias)
+                    )
+                    grad_norm_sup = torch.norm(grads_w[unique_labels]).item()
+                    self.fabric.log(
+                        "inner/grad_norm_sup",
+                        grad_norm_sup,
+                        step=self.inner_global_step,
+                    )
+                    self.fabric.log(
+                        "inner/loss_sup", loss_sup.item(), step=self.inner_global_step
+                    )
+                    # — stash pre‐update slice for change‐norm logging —
+                    W_pre = final.weight[unique_labels].clone()
                     with torch.no_grad():
-                        preds_sup = logits_sup.argmax(dim=-1)  # (B*k,)
-                        acc_sup = (preds_sup == support_labels).float().mean()
-                    # record support accuracy, but only keep it for checkpoint summaries
+                        final = list(self.model.classifier_head.children())[-1]
+                        W, b = final.weight, final.bias
+                        W[unique_labels] -= self.smlmt_inner_lr * grads_w[unique_labels]
+                        b[unique_labels] -= self.smlmt_inner_lr * grads_b[unique_labels]
+                        delta = final.weight[unique_labels] - W_pre
+                        param_change = torch.norm(delta).item()
+                        self.fabric.log(
+                            "inner/param_change_norm",
+                            param_change,
+                            step=self.inner_global_step,
+                        )
+                    # log support accuracy
+                    with torch.no_grad():
+                        acc_sup = (logits_sup.argmax(dim=-1) == inv_idx).float().mean()
                     self.inner_acc_history.append(acc_sup.item())
-                    # still log
-                    self.fabric.log("inner/acc_sup", acc_sup.item(), step=batch_step)
-
-                    self.fabric.backward(loss_sup, model=self.model)
-                    self.inner_optimizer.step()
-                    for p in self.backbone_params:
-                        p.requires_grad_(True)
-                    for name, p in self.model.classifier_head.named_parameters():
-                        if p.grad is None:
-                            self.log(
-                                f"⚠️ NO grad for head param: {name}",
-                                level=logging.WARNING,
-                            )
-                        else:
-                            grad_norm = p.grad.norm().item()
-                            self.log(
-                                f"Head param '{name}' grad norm = {grad_norm:.3e}",
-                                level=logging.INFO,
-                            )
-                # 5) compute query loss on the *adapted* head
-
+                    self.fabric.log(
+                        "inner/acc_sup", acc_sup.item(), step=self.inner_global_step
+                    )
+                    self.inner_global_step += 1
+                # 6) query pass on adapted head
                 hidden_q, _ = self.model(query_ids, return_hidden=True)
-                hidden_q = hidden_q.to(head_dtype)
-                logits_q = self.model.classifier_head(hidden_q)[
-                    torch.arange(B), pos_q, :
-                ]
-                loss = F.cross_entropy(logits_q, query_labels)
+                feats_q = hidden_q[torch.arange(B), pos_q]
+                feats_q = feats_q.to(final.weight.dtype)
+                logits_q_all = self.model.classifier_head(feats_q)
+                idx_q = torch.bucketize(query_labels, unique_labels)
+                logits_q = logits_q_all[:, unique_labels]
+                loss = F.cross_entropy(logits_q, idx_q)
 
+                # — log total head shift after all inner updates —
+                with torch.no_grad():
+                    total_shift = torch.norm(final.weight - W0).item()
+                self.fabric.log("inner/total_param_shift", total_shift, step=batch_step)
+
+                # — log support‐loss improvement from first→last inner step —
+                improvement = (initial_support_loss or 0.0) - loss_sup.item()
+                self.fabric.log(
+                    "inner/support_loss_improvement", improvement, step=batch_step
+                )
+
+                # log query accuracy
+                # build a fast mapping from token ID → position in unique_labels
+                # unique_labels is 1D of length K with values in [0, vocab_size)
+                device = unique_labels.device
+                max_label = unique_labels.max().item()
+                # create a mapping table of size (max_label+1), default to -1
+                table = torch.full(
+                    (max_label + 1,), -1, dtype=torch.long, device=device
+                )
+                table[unique_labels] = torch.arange(
+                    unique_labels.size(0), device=device
+                )
+
+                # now map each query label; any label not in unique_labels will get -1 → crash early
+                idx_q = table[query_labels]
+                if (idx_q < 0).any():
+                    raise RuntimeError(
+                        f"Some query labels not in support set: {query_labels[idx_q<0]}"
+                    )
+
+                with torch.no_grad():
+                    acc_q = (logits_q.argmax(dim=-1) == idx_q).float().mean()
+                self.query_acc_history.append(acc_q.item())
+                self.fabric.log("inner/acc_q", acc_q.item(), step=batch_step)
+
+                # 7) outer backward through adapted head
+                self.fabric.backward(
+                    loss
+                    / self.configs["training"].optimization.gradient_accumulation_steps,
+                    model=self.model,
+                )
+
+                # 8) restore original final-linear before outer step
+
+                with torch.no_grad():
+                    final = list(self.model.classifier_head.children())[-1]
+                    final.weight.copy_(W0)
+                    final.bias.copy_(b0)
+                    # NOTE: this is a bit of a hack to get the model to update the weights
             else:
                 # --- Autoregressive LM branch ---
                 input_ids = _input_ids[:, :-1]
                 labels = _input_ids[:, 1:]
-                logits, _ = self.model(input_ids)  # (B, T, V)
+                logits, _ = self.model(input_ids)
                 B2, T2, V = logits.shape
                 loss = F.cross_entropy(
                     logits.view(B2 * T2, V), labels.contiguous().view(-1)
                 )
+                self.fabric.backward(
+                    loss
+                    / self.configs["training"].optimization.gradient_accumulation_steps,
+                    model=self.model,
+                )
+
+            local_accum += 1
+
             ########################################################
             #
             # Gradient accumulation
             #
             ########################################################
-
-            should_accumulate_gradients = (sub_batch_step + 1) % self.configs[
-                "training"
-            ].optimization.gradient_accumulation_steps != 0
-
-            self.fabric.backward(
-                loss
-                / self.configs["training"].optimization.gradient_accumulation_steps,
-                model=self.model,
-            )
-
-            if do_meta:
-                with torch.no_grad():
-                    self.model.classifier_head.load_state_dict(orig_head)
 
             if torch.isnan(loss) or torch.isinf(loss):
                 interval_inf_or_nan_count += 1
@@ -711,10 +781,12 @@ class Trainer:
             ########################################################
 
             # only step once per full (accumulation) batch
-            if not should_accumulate_gradients:
+            if local_accum == accum:
                 self.outer_optimizer.step()
                 self.lr_scheduler.step()
                 self.outer_optimizer.zero_grad()
+
+                local_accum = 0
                 batch_step += 1
                 if do_meta:
                     self.smlmt_step_count += 1
@@ -766,9 +838,6 @@ class Trainer:
                         optimizer=self.outer_optimizer,
                         lr_scheduler=self.lr_scheduler,
                         tokenizer=self.tokenizer,
-                        inner_optimizer=self.inner_optimizer
-                        if self.should_smlmt
-                        else None,
                     )
                     if self.should_evaluate:
                         evaluation_results = run_evaluation(
@@ -915,14 +984,6 @@ class Trainer:
             self.fabric.log("meta/avg_sup_acc", avg_sup, step=batch_step)
             self.fabric.log("meta/avg_q_acc", avg_q, step=batch_step)
 
-            # —— sanity‐checks for some common pitfalls ——
-            mask_id = self.tokenizer.mask_token_id
-            pad_id = self.tokenizer.pad_token_id
-            if mask_id is None or mask_id == pad_id:
-                self.log(
-                    "⚠️ Using pad/eos as mask token—no true mask token defined",
-                    level=logging.WARNING,
-                )
             if grad_norm == 0.0:
                 self.log(
                     "⚠️ Head gradients zero—inner loop may not be updating the head",
