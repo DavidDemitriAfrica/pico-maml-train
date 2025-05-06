@@ -552,10 +552,21 @@ class Trainer:
 
                 # 4) Build mapper: vocab → {-1 or 0..N-1}
                 mapper = torch.full((V,), -1, device=device, dtype=torch.long)
-                classes, _ = torch.unique(sup_labels.view(-1), return_inverse=True)
-                if classes.size(0) < N:
-                    pad = torch.randint(0, V, (N - classes.size(0),), device=device)
+
+                # get unique labels from support
+                classes = torch.unique(sup_labels.view(-1))  # shape = (#unique,)
+
+                # pad if fewer than N
+                if classes.numel() < N:
+                    pad = torch.randint(0, V, (N - classes.numel(),), device=device)
                     classes = torch.cat([classes, pad], dim=0)
+
+                # truncate randomly if more than N
+                elif classes.numel() > N:
+                    perm = torch.randperm(classes.numel(), device=device)
+                    classes = classes[perm[:N]]
+
+                # now classes.numel() == N, so this assignment will never mismatch
                 mapper[classes] = torch.arange(N, device=device)
 
                 # 5) Remap support labels → [0..N-1]
