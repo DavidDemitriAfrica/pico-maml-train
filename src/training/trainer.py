@@ -646,10 +646,6 @@ class Trainer:
                 self.query_acc_history.append(acc_q.item())
                 self.fabric.log("inner/acc_q", acc_q.item(), step=batch_step)
 
-                # 8) Restore original head before outer backward
-                with torch.no_grad():
-                    self.model.classifier_head.load_state_dict(orig_state)
-
             else:
                 # --- Autoregressive LM branch ---
                 input_ids = _input_ids[:, :-1]
@@ -674,6 +670,10 @@ class Trainer:
                 / self.configs["training"].optimization.gradient_accumulation_steps,
                 model=self.model,
             )
+
+            if do_meta:
+                with torch.no_grad():
+                    self.model.classifier_head.load_state_dict(orig_state)
 
             if torch.isnan(loss) or torch.isinf(loss):
                 interval_inf_or_nan_count += 1
