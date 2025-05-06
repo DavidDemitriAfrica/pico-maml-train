@@ -112,7 +112,10 @@ for cfg in DATASET_CONFIGS:
 
             def forward(self, input_ids, attention_mask=None, labels=None, **kwargs):
                 hidden_states, _ = self.pico_decoder(
-                    input_ids, use_cache=False, return_hidden=True
+                    input_ids,
+                    past_key_values=None,
+                    use_cache=False,
+                    return_hidden=True,
                 )
                 logits = self.classifier(hidden_states)
                 loss = None
