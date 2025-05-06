@@ -5,7 +5,7 @@ Here, we initialize all of the components that are part of the learning process.
 and checkpointing to the optimizer to the dataset and the dataloader, this file contains the
 logic for setting up the classes and functions that are used in the training loop.
 
-As always, this code is meant to be basic. We hard-code the  obvious defaults, and leave the
+As always, this code is meant to be basic. We hard-code the obvious defaults, and leave the
 more experimental stuff to you.
 """
 
