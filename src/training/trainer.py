@@ -233,23 +233,6 @@ class Trainer:
             return_fast_forward_steps=True,
         )
 
-        if self.should_smlmt:
-            # — build valid‐class pool based on token frequency thresholds —
-            from collections import Counter
-
-            counter = Counter()
-            for ex in self.train_dataset:
-                counter.update(ex["input_ids"])
-            V = self.model.config.vocab_size
-            freqs = torch.tensor(
-                [counter[i] for i in range(V)],
-                dtype=torch.long,
-                device=self.fabric.device,
-            )
-            m, M = self.smlmt_min_token_freq, self.smlmt_max_token_freq
-            mask = (freqs >= m) & (freqs <= M)
-            self.smlmt_valid_classes = torch.nonzero(mask, as_tuple=False).squeeze(1)
-
         self.train_dataloader = initialize_dataloader(
             data_config=self.configs["data"],
             training_config=self.configs["training"],
