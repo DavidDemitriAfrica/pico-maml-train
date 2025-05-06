@@ -7,6 +7,7 @@ import numpy as np
 import torch.nn as nn
 from datasets import load_dataset
 from transformers import (
+    AutoConfig,
     AutoModelForCausalLM,
     AutoTokenizer,
     DataCollatorForTokenClassification,
@@ -15,8 +16,6 @@ from transformers import (
     TrainingArguments,
 )
 from transformers.modeling_outputs import TokenClassifierOutput
-
-from src.model.pico_decoder import PicoDecoderHFConfig
 
 # ─── 0. Logging setup ─────────────────────────────────────────────────────────
 LOG_FILE = "evaluation.log"
@@ -81,12 +80,10 @@ for cfg in DATASET_CONFIGS:
     for model_name in MODEL_NAMES:
         logger.info(f"→ Evaluating model '{model_name}' on config='{cfg}'")
 
-        # 3a. Load HF config for PicoDecoder
-        hf_config = PicoDecoderHFConfig.from_pretrained(
-            model_name, trust_remote_code=True
-        )
-        hf_config.num_labels = len(label_list)
-        logger.debug(f"Loaded HF config: {hf_config}")
+        # 3a. Load model config dynamically with remote code
+        config = AutoConfig.from_pretrained(model_name, trust_remote_code=True)
+        config.num_labels = len(label_list)
+        logger.debug(f"Loaded config: {config}")
 
         # 3b. Load tokenizer
         tokenizer = AutoTokenizer.from_pretrained(
@@ -94,33 +91,30 @@ for cfg in DATASET_CONFIGS:
         )
         logger.info(f"Tokenizer loaded (vocab size={tokenizer.vocab_size})")
 
-        # 3c. Setup data collator for dynamic padding
+        # 3c. Data collator for dynamic padding
         data_collator = DataCollatorForTokenClassification(tokenizer)
         logger.info("Data collator ready")
 
-        # 3d. Load base LM with custom config
+        # 3d. Load base causal LM with updated config
         base_lm = AutoModelForCausalLM.from_pretrained(
             model_name,
             trust_remote_code=True,
-            config=hf_config,
+            config=config,
         )
-        logger.info("Base causal LM loaded with HF config")
+        logger.info("Base LM loaded with dynamic config")
 
         # 3e. Define token-classification wrapper
         class PicoForTokenClassification(PreTrainedModel):
-            config_class = PicoDecoderHFConfig
-            base_model_prefix = "pico_decoder"
+            config_class = type(config)
+            base_model_prefix = base_lm.base_model_prefix
 
             def __init__(self, config):
                 super().__init__(config)
-                # underlying HF model is PicoDecoderHF
                 self.base_lm = base_lm
-                # fresh classification head
                 self.classifier = nn.Linear(config.d_model, config.num_labels)
                 self.init_weights()
 
             def forward(self, input_ids, attention_mask=None, labels=None, **kwargs):
-                # forward through HF wrapper to get hidden states
                 outputs = self.base_lm(
                     input_ids=input_ids,
                     attention_mask=attention_mask,
@@ -128,9 +122,8 @@ for cfg in DATASET_CONFIGS:
                     return_dict=True,
                     use_cache=False,
                 )
-                hidden = outputs.hidden_states[-1]  # last layer
+                hidden = outputs.hidden_states[-1]
                 logits = self.classifier(hidden)
-
                 loss = None
                 if labels is not None:
                     loss_fct = nn.CrossEntropyLoss(ignore_index=-100)
@@ -140,10 +133,10 @@ for cfg in DATASET_CONFIGS:
                     )
                 return TokenClassifierOutput(loss=loss, logits=logits)
 
-        model = PicoForTokenClassification(hf_config)
-        logger.info("Wrapped LM into PicoForTokenClassification")
+        model = PicoForTokenClassification(config)
+        logger.info("Wrapped LM in PicoForTokenClassification")
 
-        # 3f. Tokenization & label alignment
+        # 3f. Tokenize & align
         def tokenize_and_align_labels(examples):
             tok = tokenizer(
                 examples["tokens"], truncation=True, is_split_into_words=True
@@ -164,21 +157,20 @@ for cfg in DATASET_CONFIGS:
             tok["labels"] = all_labels
             return tok
 
-        logger.info("Tokenizing & aligning labels")
+        logger.info("Tokenizing dataset")
         tokenized = ds.map(
             tokenize_and_align_labels,
             batched=True,
             remove_columns=ds["train"].column_names,
         )
-        logger.info(f"Tokenized dataset columns: {tokenized.column_names}")
+        logger.info(f"Tokenized columns: {tokenized.column_names}")
 
-        # 3g. Setup Trainer
+        # 3g. Trainer setup
         output_dir = os.path.join("results", model_name.replace("/", "_"), cfg)
         log_dir = os.path.join("logs", model_name.replace("/", "_"), cfg)
         args = TrainingArguments(
             output_dir=output_dir,
             per_device_eval_batch_size=BATCH_SIZE,
-            do_train=False,
             do_eval=True,
             logging_dir=log_dir,
             report_to=[],
@@ -196,7 +188,7 @@ for cfg in DATASET_CONFIGS:
         logger.info("Trainer initialized")
 
         # 3h. Evaluate
-        logger.info(f"Running evaluation on split='{SPLIT}'")
+        logger.info(f"Evaluating split='{SPLIT}'")
         metrics = trainer.evaluate()
-        logger.info(f"Metrics for {model_name} / {cfg}: {metrics}")
+        logger.info(f"Metrics {model_name} / {cfg}: {metrics}")
         print(f"\n→ {model_name} / {cfg} / {SPLIT}:\n  {metrics}")
