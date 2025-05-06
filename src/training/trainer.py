@@ -552,30 +552,31 @@ class Trainer:
 
                 # 4) Build mapper: vocab → {-1 or 0..N-1}
                 mapper = torch.full((V,), -1, device=device, dtype=torch.long)
+                classes = torch.unique(sup_labels.view(-1))
 
-                # get unique labels from support
-                classes = torch.unique(sup_labels.view(-1))  # shape = (#unique,)
-
-                # pad if fewer than N
+                # pad if too few
                 if classes.numel() < N:
                     pad = torch.randint(0, V, (N - classes.numel(),), device=device)
                     classes = torch.cat([classes, pad], dim=0)
-
-                # truncate randomly if more than N
+                # truncate if too many
                 elif classes.numel() > N:
-                    perm = torch.randperm(classes.numel(), device=device)
-                    classes = classes[perm[:N]]
-
-                # now classes.numel() == N, so this assignment will never mismatch
+                    perm_c = torch.randperm(classes.numel(), device=device)
+                    classes = classes[perm_c[:N]]
+                # now exactly N
                 mapper[classes] = torch.arange(N, device=device)
 
-                # 5) Remap support labels → [0..N-1]
-                sup_targets = mapper[sup_labels.view(-1)].view(B, K)
+                # 5) Remap support/query labels, clamping any -1 → 0
+                raw_sup = mapper[sup_labels.view(-1)]
+                raw_sup = torch.where(raw_sup < 0, torch.zeros_like(raw_sup), raw_sup)
+                sup_targets = raw_sup.view(B, K)
+
+                raw_q = mapper[q_labels]
+                raw_q = torch.where(raw_q < 0, torch.zeros_like(raw_q), raw_q)
+                q_targets = raw_q
 
                 # 6) Inner‐loop SGD on support set
                 inner_grad_norms = []
                 for inner_step in range(self.smlmt_inner_steps):
-                    # freeze backbone
                     for p in self.backbone_params:
                         p.requires_grad_(False)
                     self.inner_optimizer.zero_grad()
@@ -583,7 +584,7 @@ class Trainer:
                     hidden_sup, _ = self.model(support_ids, return_hidden=True)
                     hidden_sup = hidden_sup.to(head_dtype)
 
-                    logits_sup = self.model.classifier_head(hidden_sup)  # (B, T, V)
+                    logits_sup = self.model.classifier_head(hidden_sup)
                     logits_sup = logits_sup[
                         torch.arange(B).unsqueeze(1), pos_sup, :  # (B, K, V)
                     ][:, :, classes]  # (B, K, N)
@@ -598,23 +599,21 @@ class Trainer:
                     self.inner_acc_history.append(acc_sup.item())
                     self.fabric.log("inner/acc_sup", acc_sup.item(), step=batch_step)
 
-                    # backward + step
                     self.fabric.backward(loss_sup, model=self.model)
                     self.inner_optimizer.step()
 
-                    # unfreeze backbone
                     for p in self.backbone_params:
                         p.requires_grad_(True)
 
-                    # record head grad norm
                     grads = [
                         p.grad
                         for p in self.model.classifier_head.parameters()
                         if p.grad is not None
                     ]
                     if grads:
-                        norm = torch.stack([g.norm() for g in grads]).mean().item()
-                        inner_grad_norms.append(norm)
+                        inner_grad_norms.append(
+                            torch.stack([g.norm() for g in grads]).mean().item()
+                        )
 
                 # — log inner‐loop grad norms —
                 if inner_grad_norms:
@@ -634,12 +633,11 @@ class Trainer:
                 hidden_q, _ = self.model(query_ids, return_hidden=True)
                 hidden_q = hidden_q.to(head_dtype)
 
-                logits_q = self.model.classifier_head(hidden_q)  # (B, T, V)
+                logits_q = self.model.classifier_head(hidden_q)
                 logits_q = logits_q[
                     torch.arange(B), pos_q.squeeze(1), :  # (B, V)
                 ][:, classes]  # (B, N)
 
-                q_targets = mapper[q_labels]  # (B,)
                 loss = F.cross_entropy(logits_q, q_targets)
 
                 # — log query accuracy —
