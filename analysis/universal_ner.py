@@ -17,13 +17,8 @@ MODEL_NAMES = [
     "pico-lm/pico-decoder-large",
 ]
 DATASET_NAME = "universalner/universal_ner"
-DATASET_CONFIG = "en_ancora"  # e.g. "en_ancora", "es_ancora", etc.
+DATASET_CONFIGS = ["en_ewt", "en_pud"]
 SPLIT = "test"  # or "train"/"validation"
-
-# 2. LOAD DATASET
-print(f"Loading Universal NER [{DATASET_CONFIG}]...")
-dataset = load_dataset(DATASET_NAME, DATASET_CONFIG, trust_remote_code=True)
-label_list = dataset["train"].features["ner_tags"].feature.names
 
 
 # 3. TOKENIZER + ALIGN LABELS
@@ -85,38 +80,41 @@ def compute_metrics(pred):
     }
 
 
-# 5. EVALUATE EACH MODEL
-for model_name in MODEL_NAMES:
-    print(f"\n→ Evaluating {model_name} on {DATASET_NAME}/{DATASET_CONFIG} {SPLIT}")
-    tokenizer = AutoTokenizer.from_pretrained(model_name, use_fast=True)
-    model = AutoModelForTokenClassification.from_pretrained(
-        model_name,
-        num_labels=len(label_list),
-    )
+for DATASET_CONFIG in DATASET_CONFIGS:
+    print(f"\nLoading {DATASET_NAME} — config={DATASET_CONFIG}")
+    dataset = load_dataset(DATASET_NAME, DATASET_CONFIG)
+    label_list = dataset["train"].features["ner_tags"].feature.names
+    for model_name in MODEL_NAMES:
+        print(f"\n→ Evaluating {model_name} on {DATASET_NAME}/{DATASET_CONFIG} {SPLIT}")
+        tokenizer = AutoTokenizer.from_pretrained(model_name, use_fast=True)
+        model = AutoModelForTokenClassification.from_pretrained(
+            model_name,
+            num_labels=len(label_list),
+        )
 
-    # tokenize & align
-    tokenized = dataset.map(
-        tokenize_and_align_labels,
-        batched=True,
-        remove_columns=dataset["train"].column_names,
-    )
+        # tokenize & align
+        tokenized = dataset.map(
+            tokenize_and_align_labels,
+            batched=True,
+            remove_columns=dataset["train"].column_names,
+        )
 
-    # set up Trainer
-    args = TrainingArguments(
-        output_dir=f"./results/{model_name.replace('/', '_')}",
-        per_device_eval_batch_size=16,
-        do_train=False,
-        do_eval=True,
-        logging_dir=f"./logs/{model_name.replace('/', '_')}",
-        report_to=[],
-    )
-    trainer = Trainer(
-        model=model,
-        args=args,
-        tokenizer=tokenizer,
-        compute_metrics=compute_metrics,
-    )
+        # set up Trainer
+        args = TrainingArguments(
+            output_dir=f"./results/{model_name.replace('/', '_')}",
+            per_device_eval_batch_size=16,
+            do_train=False,
+            do_eval=True,
+            logging_dir=f"./logs/{model_name.replace('/', '_')}",
+            report_to=[],
+        )
+        trainer = Trainer(
+            model=model,
+            args=args,
+            tokenizer=tokenizer,
+            compute_metrics=compute_metrics,
+        )
 
-    # run evaluation
-    metrics = trainer.evaluate(tokenized[SPLIT])
-    print(metrics)
+        # run evaluation
+        metrics = trainer.evaluate(tokenized[SPLIT])
+        print(metrics)
