@@ -7,8 +7,6 @@ import numpy as np
 import torch.nn as nn
 from datasets import load_dataset
 from transformers import (
-    AutoConfig,
-    AutoModelForCausalLM,
     AutoTokenizer,
     DataCollatorForTokenClassification,
     PreTrainedModel,
@@ -16,6 +14,9 @@ from transformers import (
     TrainingArguments,
 )
 from transformers.modeling_outputs import TokenClassifierOutput
+
+# import your local HF wrapper & config
+from src.model.pico_decoder import PicoDecoderHF, PicoDecoderHFConfig
 
 # ─── 0. Logging setup ─────────────────────────────────────────────────────────
 LOG_FILE = "evaluation.log"
@@ -76,29 +77,23 @@ for cfg in DATASET_CONFIGS:
     for model_name in MODEL_NAMES:
         logger.info(f"→ Evaluating model '{model_name}' on config='{cfg}'")
 
-        # 3a. Load HF artifacts with trust_remote_code
-        logger.debug("Loading config...")
-        config = AutoConfig.from_pretrained(model_name, trust_remote_code=True)
+        # 3a. Load *local* HF config & wrapper (which uses your src/model/pico_decoder.py)
+        config = PicoDecoderHFConfig.from_pretrained(
+            model_name,
+            trust_remote_code=True,  # still needed if you have remote custom code
+        )
         config.num_labels = len(label_list)
-        logger.debug(f"Config loaded: {config}")
-
-        logger.debug("Loading tokenizer...")
         tokenizer = AutoTokenizer.from_pretrained(
             model_name, trust_remote_code=True, use_fast=True
         )
-        logger.info(f"Tokenizer vocab size: {tokenizer.vocab_size}")
 
-        # 3b. Data collator for dynamic padding
-        logger.debug("Creating DataCollatorForTokenClassification...")
         data_collator = DataCollatorForTokenClassification(tokenizer)
-        logger.info("Data collator ready (pads inputs & labels to batch max length)")
+        logger.info("Data collator ready")
 
-        # 3c. Load base LM and wrap into token‐classification
-        logger.debug("Loading base causal LM...")
-        base_lm = AutoModelForCausalLM.from_pretrained(
-            model_name, trust_remote_code=True
+        # 3c. Load the PicoDecoderHF (local) wrapper, not the remote AutoModel
+        base_lm = PicoDecoderHF.from_pretrained(
+            model_name, config=config, trust_remote_code=True
         )
-        logger.info("Base LM loaded")
 
         class PicoForTokenClassification(PreTrainedModel):
             config_class = config.__class__
