@@ -83,6 +83,8 @@ for cfg in DATASET_CONFIGS:
         # 3a. Load model config dynamically with remote code
         config = AutoConfig.from_pretrained(model_name, trust_remote_code=True)
         config.num_labels = len(label_list)
+        # enable hidden states output for token-classification
+        config.output_hidden_states = True
         logger.debug(f"Loaded config: {config}")
 
         # 3b. Load tokenizer
@@ -105,25 +107,28 @@ for cfg in DATASET_CONFIGS:
 
         # 3e. Define token-classification wrapper
         class PicoForTokenClassification(PreTrainedModel):
+            """Token classification wrapper using underlying PicoDecoder for hidden states."""
+
             config_class = type(config)
-            base_model_prefix = base_lm.base_model_prefix
+            base_model_prefix = "pico_decoder"
 
             def __init__(self, config):
                 super().__init__(config)
-                self.base_lm = base_lm
+                # directly use the underlying decoder implementation
+                self.decoder = base_lm.pico_decoder
                 self.classifier = nn.Linear(config.d_model, config.num_labels)
                 self.init_weights()
 
             def forward(self, input_ids, attention_mask=None, labels=None, **kwargs):
-                outputs = self.base_lm(
-                    input_ids=input_ids,
-                    attention_mask=attention_mask,
-                    output_hidden_states=True,
-                    return_dict=True,
+                # call the core decoder to get hidden representations
+                hidden_states, _ = self.decoder(
+                    input_ids,
                     use_cache=False,
+                    return_hidden=True,
                 )
-                hidden = outputs.hidden_states[-1]
-                logits = self.classifier(hidden)
+                # hidden_states: [batch, seq_len, d_model]
+                logits = self.classifier(hidden_states)
+
                 loss = None
                 if labels is not None:
                     loss_fct = nn.CrossEntropyLoss(ignore_index=-100)
@@ -133,7 +138,7 @@ for cfg in DATASET_CONFIGS:
                     )
                 return TokenClassifierOutput(loss=loss, logits=logits)
 
-        model = PicoForTokenClassification(config)
+        model = PicoForTokenClassification(config)(config)
         logger.info("Wrapped LM in PicoForTokenClassification")
 
         # 3f. Tokenize & align
