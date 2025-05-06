@@ -1,96 +1,83 @@
-# 🚀 **Pico Train**
+# 🚀 Pico MAML Train
 
-Pico Train is a lightweight framework for training language models—from tiny-scale (~1M parameters) to mid-scale (~1B parameters)—with built-in rich checkpointing that captures activations, gradients, and model states, enabling detailed learning dynamics research.
-
-Our **suite of pre-trained models** is already publicly available on our [Hugging Face organization](https://huggingface.co/pico-lm), and a dedicated companion library for advanced analysis—[**pico-analyze**](https://github.com/pico-lm/pico-analyze)—is fully released for deeper checkpoint studies.
-
-> For a **detailed run-through**, check out the **full tutorial** on our website at [picolm.io](https://picolm.io).
+Pico MAML Train is a fork of **Pico Train**, extended with meta‑learning capabilities for language model pretraining. It retains all the original lightweight design and rich checkpointing features of Pico Train, and adds **Model‑Agnostic Meta‑Learning (MAML)** and **Semi‑supervised Meta‑Learning Token (SMLMT)** support to help you pretrain transformers that can rapidly adapt to downstream tasks with just a few gradient steps. This repository is written for the final project in partial completion of the MPhil in Advanced Computer Science at the University of Cambridge.
 
 ---
 
-## **Key Features**
+## 🎯 What’s New in This Fork?
 
-1. **Pico Decoder: LLAMA-style Transformer Architecture**  
-   - RMSNorm, RoPE, multi-head self-attention with KV-cache, and SwiGLU activations  
-   - Currently supports the **pico-decoder** model, with future expansions planned (pico-diffusion, pico-statespace, etc.)
-
-2. **Comprehensive Checkpoints**  
-   - Saves model states, optimizer states, and training metadata  
-   - Enriched with **activation and gradient** snapshots for interpretability  
-
-3. **Focused Scale Range**  
-   - Optimized to train models from **1M to 1B parameters**, where learning dynamics research is most viable  
-
-4. **Clean, Pre-tokenized Data**
-   - Uses a pre-tokenized, pre-shuffled version of [Dolma](https://allenai.org/dolma) that we make available on [Hugging Face](https://huggingface.co/datasets/pico-lm/pretokenized-dolma)  
-   - Facilitates training models using identical data for **consistency** and **comparability**
-
-6. **Research Ready**  
-   - Minimal, well-documented code suitable for **forking and tailoring**  
-   - Logs essential metrics (e.g. perplexity) throughout training  
-   - Works seamlessly with [pico-analyze](https://github.com/pico-lm/pico-analyze) for advanced post-training interpretation
+* **MAML‑style Pretraining**: Inner‑loop/outer‑loop optimization that alternates between task‑specific adaptation steps and shared backbone updates.
+* **SMLMT Hybrid Training**: Balance between autoregressive language modeling and N‑way K‑shot meta‑learning via a configurable `hybrid_ratio`.
+* **Classification Head**: A lightweight token‑level classification head for inner‑loop support/query tasks, fully configurable (hidden dims, layers, init).
+* **Granular Logging of Meta‑Metrics**: Track support/query accuracies, inner‑loop gradient norms, meta/AR step counts, and head‐parameter statistics alongside standard LM metrics.
+* **Seamless Resume & Checkpointing**: Carry over both outer and inner optimizer states, learning rate schedulers, and head classifier weights when resuming from checkpoints.
 
 ---
 
-## **Training Philosophy**
+## 🔑 Key Features
 
-All models in the Pico suite (both pre-trained and user-trained):
+1. **Lightning Fabric Integration**
 
-- Employ **identical architectures** and **optimizer settings**  
-- **Share** the same data order and tokens  
-- Automatically log **rich checkpoint data** (including activations, gradients)  
-- Facilitate **direct cross-scale comparisons**
+   * Distributed, multi‑node, multi‑GPU training support with minimal code changes.
+   * Built‑in logging hooks for both TensorBoard and Weights & Biases.
 
-This uniformity means you can isolate model size as the primary variable, giving you clearer insights into **how model capacity affects learning**.
+2. **MAML Inner‑Loop**
 
----
+   * Configurable number of inner steps (`inner_steps`), learning rate (`inner_lr`), way (`n_way`), and shot (`k_shot`).
+   * Freezes backbone during adaptation and only updates the classification head in support phase.
 
-## **Resources**
+3. **Hybrid AR + Meta Learning**
 
-- **Pre-trained Models** (1M–1B parameters), publicly hosted on [Hugging Face](https://huggingface.co/pico-lm)
-- **Pre-tokenized Datasets** for straightforward streaming-based training  
-- **Extensive Checkpoints** logging activation and gradient snapshots  
-- **Evaluation Metrics** (perplexity and more) tracked at each checkpoint
+   * At each batch, stochastically choose between autoregressive LM loss and meta‑learning loss based on `hybrid_ratio`.
 
----
+4. **Comprehensive Checkpointing**
 
-## **Core Components**
+   * Saves outer model + optimizer + scheduler, inner optimizer state, and meta‑learning histories.
+   * Hooks for capturing activations and gradients for interpretability (compatible with **pico‑analyze**).
 
-- **Pico-Decoder Model**  
-  - LLAMA-style auto-regressive transformer  
-  - RMSNorm  
-  - RoPE (Rotary Positional Embeddings)  
-  - Multi-head attention with KV-cache  
-  - SwiGLU activation  
-  
-  *Future plans include additional architectures like pico-diffusion and pico-statespace.*
+5. **Config‑Driven**
 
-- **Training & Checkpointing**  
-  - Automatic storage of model and optimizer states  
-  - Periodic hooks for saving **learning dynamics** (activations, gradients)  
-  - Optional logging to Weights & Biases
-
-- **Config-Driven Setup**  
-  - Specify architecture, optimizer, dataset, and logging settings in YAML  
-  - Straightforward to extend or modify
+   * All hyperparameters, model sizes, data paths, and training settings defined in YAML config.
+   * Example configs for pure LM, pure MAML, and hybrid SMLMT training included.
 
 ---
 
-## **Quick Start**
+## 🛠️ Training Philosophy
 
-1. **Clone the Repository**
+We believe in:
+
+* **Reproducible Meta‑Learning**: Identical architectures and data orders across runs, isolating the effect of inner‑loop adaptation.
+* **Flexible Task Definitions**: Easily swap between AR, few‑shot classification, or any custom inner‐loop objective.
+* **Rich Learning Dynamics**: Log everything from loss curves to layer‑wise gradient norms to support in‑depth analysis.
+
+---
+
+## 📦 Resources
+
+* **Pre‑tokenized Dolma Dataset** on Hugging Face
+* **Pico‑Analyze** for post‑hoc interpretability of checkpoints
+* **Example Configs** under `configs/`:
+
+  * `maml_lm.yaml`: Pure MAML pretraining
+  * `hybrid_smmlt.yaml`: SMLMT hybrid training
+  * `demo.yaml`: Basic autoregressive LM (backward‑compatible with original Pico Train)
+
+---
+
+## 🏃 Quick Start
+
+1. **Clone the Fork**
 
    ```bash
-   git clone https://github.com/pico-lm/pico-train
-   cd pico-train
+   git clone https://github.com/DavidDemitriAfrica/pico-maml-train
+   cd pico-maml-train
    ```
 
 2. **Configure Environment**
 
-   Create a `.env` file at the root with your Hugging Face and Weights & Biases tokens:
    ```bash
-   export HF_TOKEN=your_huggingface_token
-   export WANDB_API_KEY=your_wandb_key
+   export HF_TOKEN=<your_hf_token>
+   export WANDB_API_KEY=<your_wandb_key>
    ```
 
 3. **Install Dependencies**
@@ -98,73 +85,61 @@ This uniformity means you can isolate model size as the primary variable, giving
    ```bash
    source setup.sh
    ```
-   This script checks your environment, installs necessary tools, and sets up a Poetry virtual environment.
 
-4. **Train Your Model Suite**
+   This script installs dependencies, sets up a virtual environment, and verifies CUDA/Distributed setup.
 
-   - Edit (or create) a config file (e.g., `configs/demo.yaml`) to specify your architecture and training preferences.
-   - Then run:
-     ```bash
-     poetry run train --config_path configs/demo.yaml
-     ```
-   - This launches training, automatically checkpointing states and saving learning dynamics data.
+4. **Run Training**
 
-5. **Explore Checkpoints**
-   - By default, checkpoints are stored under `runs/YOUR_RUN_NAME/checkpoints/`.
-   - Each checkpoint contains:
-     - **Model state** (PyTorch + Hugging Face formats)
-     - **Optimizer state**
-     - **Gradients and activations** for interpretability
-     - **Evaluation logs** (e.g. perplexity) and metrics
+   ```bash
+   poetry run train --config_path configs/{insert_your_config_here}.yaml
+   ```
+}
+5. **Inspect Logs & Checkpoints**
+
+   * Checkpoints: `runs/<run_name>/checkpoints/step_<N>.pt`
+   * W\&B: View support/query accuracies, inner‑loop grad norms, AR loss, meta loss, and more.
 
 ---
 
-## **Repository Structure**
+## 📁 Repository Structure (additions to original)
 
-- **`src/model/pico_decoder.py`**  
-  - Core LLAMA-style decoder implementation (attention, RMSNorm, RoPE, etc.)
-
-- **`src/training/trainer.py`**  
-  - Main training loop  
-  - Manages distributed and multi-node settings  
-  - Collects/logs metrics  
-  - Orchestrates checkpoint saving
-
-- **`src/checkpointing`**  
-  - Logic for saving model states, gradients, activations  
-  - Tools for uploading checkpoints to Hugging Face
-
-- **`src/config`**  
-  - Flexible Dataclass-based config system (model and training hyperparameters, checkpointing, logging)
-
-- **`configs/demo.yaml`**  
-  - Example config with default values for quick experimentation
+```
+├── src/
+│   │── config/
+│   │   └── smlmt_config.py  # Config for SMLMT style training
+│   ├── model/
+│   │   └── pico_decoder.py  # LLAMA‑style Transformer
+│   ├── training/
+│   │   ├── trainer.py       # Main Trainer with MAML/SMLMT loops
+│   │   └── utils/           # Config, dataloader, logging, LR scheduler
+│   └── checkpointing/       # Save/load model, optimizer, dynamics hooks
+```
 
 ---
 
-## **Advanced Analysis with Pico Analyze**
+## 🔍 Analysis & Interpretability
 
-For deeper checkpoint analysis—comparing gradients, tracking representation shifts, measuring sparsity—use our companion repository [**pico-analyze**](https://github.com/pico-lm/pico-analyze). It automatically processes **pico-train** checkpoints and applies advanced metrics like **CKA**, **PWCCA**, **Gini**, **Hoyer**, and more to reveal **how** your models learn over time.
+Leverage our companion tool [**pico-analyze**](https://github.com/pico-lm/pico-analyze) to:
 
----
-
-## **License**
-
-Pico is open-source under the [Apache License 2.0](LICENSE).
+* Compute CKA, PWCCA between layers
+* Track gradient sparsity and neuron activation distributions
+* Compare learning trajectories across different inner-loop hyperparameters
 
 ---
 
-## **Citation**
+## 📜 License & Citation
 
-If you use **Pico** in your research, please cite:
+Pico MAML Train is released under the **Apache 2.0** license (see [`LICENSE`](LICENSE)).
+
+If you use this framework in your research, please cite:
 
 ```bibtex
-@software{pico2025,
-    author = {Diehl Martinez, Richard},
-    title = {Pico: A Lightweight Framework for Studying Language Model Learning Dynamics},
-    year = {2025},
-    url = {https://github.com/pico-lm}
+@software{africa2025pico_maml_train,
+  author = {Africa, David Demitri and Martinez, Richard Diehl},
+  title = {Pico MAML Train: A Meta‑Learning Extension for Language Model Pretraining},
+  year = {2025},
+  url = {https://github.com/pico-lm/pico-maml-train}
 }
 ```
 
-**Happy Training!** For more information and tutorials, visit our website at [picolm.io](https://picolm.io).
+**Happy meta‑learning!**
