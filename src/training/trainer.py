@@ -521,118 +521,126 @@ class Trainer:
             rand_val = self.fabric.broadcast(rand_val, src=0)
             do_meta = self.should_smlmt and (rand_val.item() < self.smlmt_hybrid_ratio)
             if do_meta:
-                # 1) snapshot head
-                orig_head = {
-                    k: v.clone()
-                    for k, v in self.model.classifier_head.state_dict().items()
-                }
+                device = self.fabric.device
                 B, L = _input_ids.size()
                 N, K = self.smlmt_n_way, self.smlmt_k_shot
-                # 2) sample N-way classes from the valid pool
-                pool = self.smlmt_valid_classes
-                perm = torch.randperm(pool.size(0), device=_input_ids.device)
-                classes = pool[perm[:N]]
+                V = self.model.config.vocab_size
+                head_dtype = next(self.model.classifier_head.parameters()).dtype
 
-                # 2) sample two mask‐positions per sequence: support & query
-                pos_sup = torch.randint(
-                    1, L - 1, (B, K), device=_input_ids.device
-                )  # (B,k)
-                pos_q = torch.randint(1, L - 1, (B,), device=_input_ids.device)
+                # 1) Snapshot head state
+                orig_state = {
+                    name: param.clone()
+                    for name, param in self.model.classifier_head.state_dict().items()
+                }
+
+                # 2) Sample disjoint support/query positions in [1..L-1)
+                perm = torch.randperm(L - 1, device=device) + 1
+                pos_sup = perm[:K].unsqueeze(0).expand(B, K)  # (B, K)
+                pos_q = perm[K].repeat(B, 1)  # (B, 1)
 
                 support_ids = _input_ids.clone()
-                mask_id = self.mask_id
-                support_labels = support_ids[
-                    torch.arange(B).unsqueeze(1), pos_sup
-                ].clone()  # (B,k)
-                support_ids[torch.arange(B).unsqueeze(1), pos_sup] = mask_id
-
                 query_ids = _input_ids.clone()
-                query_labels = query_ids[torch.arange(B), pos_q].clone()
-                query_ids[torch.arange(B), pos_q] = mask_id
 
+                # 3) Extract labels and mask them out
+                sup_labels = support_ids[
+                    torch.arange(B).unsqueeze(1), pos_sup
+                ]  # (B, K)
+                q_labels = query_ids[torch.arange(B), pos_q.squeeze(1)]  # (B,)
+
+                support_ids[torch.arange(B).unsqueeze(1), pos_sup] = self.mask_id
+                query_ids[torch.arange(B), pos_q.squeeze(1)] = self.mask_id
+
+                # 4) Build mapper: vocab → {-1 or 0..N-1}
+                mapper = torch.full((V,), -1, device=device, dtype=torch.long)
+                classes, _ = torch.unique(sup_labels.view(-1), return_inverse=True)
+                if classes.size(0) < N:
+                    pad = torch.randint(0, V, (N - classes.size(0),), device=device)
+                    classes = torch.cat([classes, pad], dim=0)
+                mapper[classes] = torch.arange(N, device=device)
+
+                # 5) Remap support labels → [0..N-1]
+                sup_targets = mapper[sup_labels.view(-1)].view(B, K)
+
+                # 6) Inner‐loop SGD on support set
                 inner_grad_norms = []
                 for inner_step in range(self.smlmt_inner_steps):
+                    # freeze backbone
                     for p in self.backbone_params:
                         p.requires_grad_(False)
-                    # zero grad on _inner_ optimizer up front
                     self.inner_optimizer.zero_grad()
-                    # freeze transformer weights
+
                     hidden_sup, _ = self.model(support_ids, return_hidden=True)
-                    # make sure hidden_sup is the same dtype as the head’s weights:
-                    head_dtype = next(self.model.classifier_head.parameters()).dtype
                     hidden_sup = hidden_sup.to(head_dtype)
-                    # project only onto our N classes
-                    logits_sup = self.model.classifier_head(hidden_sup)
-                    logits_sup = logits_sup[torch.arange(B).unsqueeze(1), pos_sup, :][
-                        :, :, classes
-                    ]
-                    # flatten to (B*K, N)
+
+                    logits_sup = self.model.classifier_head(hidden_sup)  # (B, T, V)
+                    logits_sup = logits_sup[
+                        torch.arange(B).unsqueeze(1), pos_sup, :  # (B, K, V)
+                    ][:, :, classes]  # (B, K, N)
                     logits_sup = logits_sup.contiguous().view(B * K, N)
-                    support_labels = support_labels.view(B * K)
-                    # remap labels into [0..N-1]
-                    mapper = torch.full(
-                        (self.model.config.vocab_size,),
-                        -1,
-                        device=_input_ids.device,
-                        dtype=torch.long,
-                    )
-                    mapper[classes] = torch.arange(N, device=_input_ids.device)
-                    support_labels = mapper[support_labels]
-                    loss_sup = F.cross_entropy(logits_sup, support_labels)
-                    # use Fabric so on multi‐GPU we sync grads if desired
-                    # ——— compute support accuracy ———
+
+                    loss_sup = F.cross_entropy(logits_sup, sup_targets.view(-1))
+
+                    # — log support accuracy —
                     with torch.no_grad():
-                        preds_sup = logits_sup.argmax(dim=-1)  # (B*k,)
-                        acc_sup = (preds_sup == support_labels).float().mean()
-                    # record support accuracy, but only keep it for checkpoint summaries
+                        preds_sup = logits_sup.argmax(dim=-1)
+                        acc_sup = (preds_sup == sup_targets.view(-1)).float().mean()
                     self.inner_acc_history.append(acc_sup.item())
-                    # still log
                     self.fabric.log("inner/acc_sup", acc_sup.item(), step=batch_step)
 
+                    # backward + step
                     self.fabric.backward(loss_sup, model=self.model)
                     self.inner_optimizer.step()
+
+                    # unfreeze backbone
                     for p in self.backbone_params:
                         p.requires_grad_(True)
+
+                    # record head grad norm
                     grads = [
                         p.grad
                         for p in self.model.classifier_head.parameters()
                         if p.grad is not None
                     ]
                     if grads:
-                        # record the mean grad norm for this inner step
-                        norms = torch.stack([g.norm() for g in grads])
-                        inner_grad_norms.append(norms.mean().item())
+                        norm = torch.stack([g.norm() for g in grads]).mean().item()
+                        inner_grad_norms.append(norm)
+
+                # — log inner‐loop grad norms —
                 if inner_grad_norms:
-                    mean_over_inner = sum(inner_grad_norms) / len(inner_grad_norms)
-                    std_over_inner = (
-                        sum((x - mean_over_inner) ** 2 for x in inner_grad_norms)
+                    mean_norm = sum(inner_grad_norms) / len(inner_grad_norms)
+                    std_norm = (
+                        sum((x - mean_norm) ** 2 for x in inner_grad_norms)
                         / len(inner_grad_norms)
                     ) ** 0.5
                     self.fabric.log(
-                        "inner/head_grad_norm_mean", mean_over_inner, step=batch_step
+                        "inner/head_grad_norm_mean", mean_norm, step=batch_step
                     )
                     self.fabric.log(
-                        "inner/head_grad_norm_std", std_over_inner, step=batch_step
+                        "inner/head_grad_norm_std", std_norm, step=batch_step
                     )
-                # 5) compute query loss on the *adapted* head
 
+                # 7) Query‐set forward for outer loss
                 hidden_q, _ = self.model(query_ids, return_hidden=True)
                 hidden_q = hidden_q.to(head_dtype)
-                # project only onto N classes
-                logits_q = self.model.classifier_head(hidden_q)[:, :, classes]
-                logits_q = logits_q[torch.arange(B), pos_q, :]  # (B, N)
-                # remap query labels into [0..N-1]
-                query_labels = query_labels.to(_input_ids.device)
-                label_map = {c.item(): i for i, c in enumerate(classes)}
-                query_labels = torch.tensor(
-                    [label_map[label.item()] for label in query_labels],
-                    device=_input_ids.device,
-                )
-                loss = F.cross_entropy(logits_q, query_labels)
+
+                logits_q = self.model.classifier_head(hidden_q)  # (B, T, V)
+                logits_q = logits_q[
+                    torch.arange(B), pos_q.squeeze(1), :  # (B, V)
+                ][:, classes]  # (B, N)
+
+                q_targets = mapper[q_labels]  # (B,)
+                loss = F.cross_entropy(logits_q, q_targets)
+
+                # — log query accuracy —
                 with torch.no_grad():
-                    acc_q = (logits_q.argmax(dim=-1) == query_labels).float().mean()
+                    acc_q = (logits_q.argmax(dim=-1) == q_targets).float().mean()
                 self.query_acc_history.append(acc_q.item())
                 self.fabric.log("inner/acc_q", acc_q.item(), step=batch_step)
+
+                # 8) Restore original head before outer backward
+                with torch.no_grad():
+                    self.model.classifier_head.load_state_dict(orig_state)
+
             else:
                 # --- Autoregressive LM branch ---
                 input_ids = _input_ids[:, :-1]
@@ -657,10 +665,6 @@ class Trainer:
                 / self.configs["training"].optimization.gradient_accumulation_steps,
                 model=self.model,
             )
-
-            if do_meta:
-                with torch.no_grad():
-                    self.model.classifier_head.load_state_dict(orig_head)
 
             if torch.isnan(loss) or torch.isinf(loss):
                 interval_inf_or_nan_count += 1
