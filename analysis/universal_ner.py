@@ -86,10 +86,11 @@ for DATASET_CONFIG in DATASET_CONFIGS:
     label_list = dataset["train"].features["ner_tags"].feature.names
     for model_name in MODEL_NAMES:
         print(f"\n→ Evaluating {model_name} on {DATASET_NAME}/{DATASET_CONFIG} {SPLIT}")
-        tokenizer = AutoTokenizer.from_pretrained(model_name, use_fast=True)
+        tokenizer = AutoTokenizer.from_pretrained(
+            model_name, use_fast=True, trust_remote_code=True
+        )
         model = AutoModelForTokenClassification.from_pretrained(
-            model_name,
-            num_labels=len(label_list),
+            model_name, num_labels=len(label_list), trust_remote_code=True
         )
 
         # tokenize & align
