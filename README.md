@@ -1,8 +1,23 @@
 # 🚀 Pico MAML Train
 
-Pico MAML Train is a fork of **Pico Train**, extended with meta‑learning capabilities for language model pretraining. It retains all the original lightweight design and rich checkpointing features of Pico Train, and adds **Model‑Agnostic Meta‑Learning (MAML)** and **Semi‑supervised Meta‑Learning Token (SMLMT)** support to help you pretrain transformers that can rapidly adapt to downstream tasks with just a few gradient steps. This repository is written for the final project in partial completion of the MPhil in Advanced Computer Science at the University of Cambridge.
+Pico MAML Train is a fork of **Pico Train**, extended with meta‑learning capabilities for language model pretraining. It retains all the original lightweight design and rich checkpointing features of Pico Train, and adds **Model‑Agnostic Meta‑Learning (MAML)** using **Subset Masked Language Modeling Tasks (SMLMT)** to help you pretrain transformers to rapidly adapt to downstream tasks with just a few gradient steps. This repository is written for the final project in partial completion of the MPhil in Advanced Computer Science at the University of Cambridge.
 
----
+1. **Sample a small support set** of K token positions and mask them.
+2. **Run N inner-loop SGD steps** on the support set, updating only a lightweight classification head.
+3. **Evaluate adaptation** on a disjoint query set of tokens to compute an outer-loop meta-loss, which updates the shared model backbone.
+4. **Optionally blend** this meta-loss with the standard autoregressive objective according to a configurable hybrid ratio.
+
+**Example:** Given the sentence:
+
+> “The cat sat on the mat.”
+
+* **Support set masks:** “\_ cat \_ on \_ mat.”
+* **Inner-loop:** Update classifier head to recover “The” and “sat.”
+* **Query set mask:** “The \_ sat \_ the \_.”
+* **Outer-loop:** Use performance on “sat” and “mat” to shape backbone representations.
+
+This pretraining paradigm ideally encourages the model to learn representations that are not only fluent but also **few-shot adaptable**, improving sample efficiency and downstream performance on tasks like masked token classification, infilling, and prompt-based learning.
+
 
 ## 🎯 What’s New in This Fork?
 
