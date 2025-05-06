@@ -22,7 +22,7 @@ SPLIT = "test"  # or "train"/"validation"
 
 # 2. LOAD DATASET
 print(f"Loading Universal NER [{DATASET_CONFIG}]...")
-dataset = load_dataset(DATASET_NAME, DATASET_CONFIG)
+dataset = load_dataset(DATASET_NAME, DATASET_CONFIG, trust_remote_code=True)
 label_list = dataset["train"].features["ner_tags"].feature.names
 
 
