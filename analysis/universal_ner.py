@@ -10,6 +10,7 @@ from transformers import (
     AutoConfig,
     AutoModelForCausalLM,
     AutoTokenizer,
+    DataCollatorForTokenClassification,
     PreTrainedModel,
     Trainer,
     TrainingArguments,
@@ -76,33 +77,8 @@ for cfg in DATASET_CONFIGS:
     label_list = ds["train"].features["ner_tags"].feature.names
     logger.info(f"Found {len(label_list)} labels: {label_list}")
 
-    # tokenize & align function uses `tokenizer`, so we'll define it later in the loop
-    def tokenize_and_align_labels(examples):
-        tokenized_inputs = tokenizer(
-            examples["tokens"], truncation=True, is_split_into_words=True
-        )
-        all_labels = []
-        for i, labs in enumerate(examples["ner_tags"]):
-            word_ids, prev = tokenized_inputs.word_ids(batch_index=i), None
-            label_ids = []
-            for wid in word_ids:
-                if wid is None:
-                    label_ids.append(-100)
-                elif wid != prev:
-                    label_ids.append(labs[wid])
-                else:
-                    label_ids.append(-100)
-                prev = wid
-            all_labels.append(label_ids)
-        tokenized_inputs["labels"] = all_labels
-        return tokenized_inputs
-
-    # map once per config
-    logger.info(f"Tokenizing & aligning labels for split='{SPLIT}'")
-    # but we delay actual mapping until after tokenizer is defined
-
     for model_name in MODEL_NAMES:
-        logger.info(f"→ Starting evaluation for model '{model_name}' on config='{cfg}'")
+        logger.info(f"→ Evaluating model '{model_name}' on config='{cfg}'")
 
         # 3a. Load HF artifacts with trust_remote_code
         logger.debug("Loading config...")
@@ -116,13 +92,18 @@ for cfg in DATASET_CONFIGS:
         )
         logger.info(f"Tokenizer vocab size: {tokenizer.vocab_size}")
 
-        logger.debug("Loading base LM...")
+        # 3b. Data collator for dynamic padding
+        logger.debug("Creating DataCollatorForTokenClassification...")
+        data_collator = DataCollatorForTokenClassification(tokenizer)
+        logger.info("Data collator ready (pads inputs & labels to batch max length)")
+
+        # 3c. Load base LM and wrap into token‐classification
+        logger.debug("Loading base causal LM...")
         base_lm = AutoModelForCausalLM.from_pretrained(
             model_name, trust_remote_code=True
         )
-        logger.info("Base LM loaded successfully")
+        logger.info("Base LM loaded")
 
-        # 3b. Wrap into a token‐classification model
         class PicoForTokenClassification(PreTrainedModel):
             config_class = config.__class__
             base_model_prefix = "pico_decoder"
@@ -133,18 +114,9 @@ for cfg in DATASET_CONFIGS:
                 self.classifier = nn.Linear(config.d_model, config.num_labels)
                 self.init_weights()
 
-            def forward(
-                self,
-                input_ids,
-                attention_mask=None,
-                labels=None,
-                **kwargs,
-            ):
-                # extract hidden states
+            def forward(self, input_ids, attention_mask=None, labels=None, **kwargs):
                 hidden_states, _ = self.pico_decoder(
-                    input_ids,
-                    use_cache=False,
-                    return_hidden=True,
+                    input_ids, use_cache=False, return_hidden=True
                 )
                 logits = self.classifier(hidden_states)
                 loss = None
@@ -154,26 +126,41 @@ for cfg in DATASET_CONFIGS:
                         logits.view(-1, self.config.num_labels),
                         labels.view(-1),
                     )
-                return TokenClassifierOutput(
-                    loss=loss,
-                    logits=logits,
-                    hidden_states=None,
-                    attentions=None,
-                )
+                return TokenClassifierOutput(loss=loss, logits=logits)
 
         model = PicoForTokenClassification(config)
-        logger.info("Wrapped LM into token-classification model")
+        logger.info("Wrapped LM into token‐classification model")
 
-        # 3c. Tokenize & align labels
-        logger.info("Applying tokenization & label alignment to the full dataset")
+        # 3d. Tokenize & align labels
+        def tokenize_and_align_labels(examples):
+            tokenized_inputs = tokenizer(
+                examples["tokens"], truncation=True, is_split_into_words=True
+            )
+            all_labels = []
+            for i, labs in enumerate(examples["ner_tags"]):
+                word_ids, prev = tokenized_inputs.word_ids(batch_index=i), None
+                label_ids = []
+                for wid in word_ids:
+                    if wid is None:
+                        label_ids.append(-100)
+                    elif wid != prev:
+                        label_ids.append(labs[wid])
+                    else:
+                        label_ids.append(-100)
+                    prev = wid
+                all_labels.append(label_ids)
+            tokenized_inputs["labels"] = all_labels
+            return tokenized_inputs
+
+        logger.info("Applying tokenization & label alignment...")
         tokenized = ds.map(
             tokenize_and_align_labels,
             batched=True,
             remove_columns=ds["train"].column_names,
         )
-        logger.info(f"Tokenized dataset keys: {tokenized.column_names}")
+        logger.info(f"Tokenized dataset columns: {tokenized.column_names}")
 
-        # 3d. Trainer setup
+        # 3e. Trainer setup
         output_dir = os.path.join("results", model_name.replace("/", "_"), cfg)
         log_dir = os.path.join("logs", model_name.replace("/", "_"), cfg)
         args = TrainingArguments(
@@ -182,22 +169,22 @@ for cfg in DATASET_CONFIGS:
             do_train=False,
             do_eval=True,
             logging_dir=log_dir,
-            report_to=[],  # disable default logging integrations
+            report_to=[],
         )
-        logger.info(f"Trainer args: {args}")
+        logger.info(f"TrainerArguments: {args}")
 
         trainer = Trainer(
             model=model,
             args=args,
             tokenizer=tokenizer,
+            data_collator=data_collator,
             compute_metrics=compute_metrics,
+            eval_dataset=tokenized[SPLIT],
         )
-        logger.info("Trainer initialized")
+        logger.info("Trainer initialized with data collator and eval_dataset")
 
-        # 3e. Run evaluation
-        logger.info(f"Running evaluation on split='{SPLIT}'")
-        metrics = trainer.evaluate(tokenized[SPLIT])
-        logger.info(f"→ Metrics for {model_name} on {cfg}: {metrics}")
-
-        # also print to console
-        print(f"\nMetrics for {model_name} / {cfg} / {SPLIT}:\n  {metrics}")
+        # 3f. Run evaluation
+        logger.info(f"Starting evaluation on split='{SPLIT}'")
+        metrics = trainer.evaluate()
+        logger.info(f"Results for {model_name} on {cfg}: {metrics}")
+        print(f"\n→ {model_name} / {cfg} / {SPLIT}: {metrics}")
