@@ -71,11 +71,7 @@ We believe in:
 
 * **Pre‑tokenized Dolma Dataset** on Hugging Face
 * **Pico‑Analyze** for post‑hoc interpretability of checkpoints
-* **Example Configs** under `configs/`:
-
-  * `maml_lm.yaml`: Pure MAML pretraining
-  * `hybrid_smmlt.yaml`: SMLMT hybrid training
-  * `demo.yaml`: Basic autoregressive LM (backward‑compatible with original Pico Train)
+* **Example Configs** under `configs/` for SMLMT pre-training at various sizes
 
 ---
 
