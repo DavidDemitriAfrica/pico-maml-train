@@ -23,7 +23,7 @@ monitoring:
     log_every_n_steps: 10  # you can still print to console
 
 training:
-  max_steps: 100000
+  max_steps: 1000000
   optimization:
     gradient_accumulation_steps: 8
     gradient_checkpointing: true
