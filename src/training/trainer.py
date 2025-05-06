@@ -899,9 +899,9 @@ class Trainer:
         lr = self.lr_scheduler.get_last_lr()[0]
 
         # ---- log to tensorboard/wandb ----
-        self.fabric.log("train/loss", avg_loss, step=batch_step)
-        self.fabric.log("trainer/inf_or_nan_count", total_inf_nan, step=batch_step)
-        self.fabric.log("trainer/learning_rate", lr, step=batch_step)
+        self.fabric.log("train/loss", avg_loss)
+        self.fabric.log("trainer/inf_or_nan_count", total_inf_nan)
+        self.fabric.log("trainer/learning_rate", lr)
 
         # ---- optionally log head stats ----
         if self.configs["smlmt"].enabled:
@@ -918,9 +918,9 @@ class Trainer:
                 else 0.0
             )
 
-            self.fabric.log("head/weight_mean", w_mean, step=batch_step)
-            self.fabric.log("head/weight_std", w_std, step=batch_step)
-            self.fabric.log("head/grad_norm", grad_norm, step=batch_step)
+            self.fabric.log("head/weight_mean", w_mean)
+            self.fabric.log("head/weight_std", w_std)
+            self.fabric.log("head/grad_norm", grad_norm)
 
         # ---- console output ----
         self.log(f"Step {batch_step} -- 🔄 Training Metrics")
