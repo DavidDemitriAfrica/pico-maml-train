@@ -16,7 +16,7 @@ MODEL_NAMES = [
     "pico-lm/pico-decoder-medium",
     "pico-lm/pico-decoder-large",
 ]
-DATASET_NAME = "universal_ner"
+DATASET_NAME = "universalner/universal_ner"
 DATASET_CONFIG = "en_ancora"  # e.g. "en_ancora", "es_ancora", etc.
 SPLIT = "test"  # or "train"/"validation"
 
