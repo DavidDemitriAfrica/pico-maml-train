@@ -1,19 +1,19 @@
 # runpod-pico-maml-decoder-tiny.yaml
 
 checkpointing:
-  run_name: "pico-maml-decoder-small-1"
+  run_name: "pico-maml-decoder-medium-2"
   save_to_hf: true         # no pushes to HuggingFace
   auto_resume: true        # don’t try to resume from disk
   save_every_n_steps: 100 
   hf_checkpoint:
-    repo_id: "davidafrica/pico-maml-decoder-small"
+    repo_id: "davidafrica/pico-maml-decoder-medium"
 
   learning_dynamics:
     batch_size: 128
 
 model:
-  d_model: 384
-  activation_hidden_dim: 1536
+    d_model: 768
+    activation_hidden_dim: 3072
 
 monitoring:
   save_to_wandb: true      
