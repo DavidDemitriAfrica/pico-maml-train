@@ -96,7 +96,11 @@ def compute_metrics(eval_pred: EvalPrediction):
 for cfg in DATASET_CONFIGS:
     logger.info(f"Loading dataset {DATASET_NAME} config={cfg}")
     ds = load_dataset(DATASET_NAME, cfg, trust_remote_code=True)
-    label_list = ds["train"].features["ner_tags"].feature.names
+    if "train" in ds:
+        base = ds["train"]
+    else:
+        base = next(iter(ds.values()))
+    label_list = base.features["ner_tags"].feature.names
     logger.info(f"Found {len(label_list)} labels: {label_list}")
 
     for model_name in MODEL_NAMES:
