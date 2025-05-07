@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
 import logging
 import os
+import random
 
 import evaluate
 import numpy as np
+import torch
 import torch.nn as nn
 from datasets import load_dataset
 from transformers import (
@@ -13,11 +15,26 @@ from transformers import (
     PreTrainedModel,
     Trainer,
     TrainingArguments,
+    set_seed,
 )
 from transformers.modeling_outputs import TokenClassifierOutput
 
 # import your local HF wrapper & config
 from src.model.pico_decoder import PicoDecoderHF, PicoDecoderHFConfig
+
+# ─── -1. Setting seeds for reproducibility ────────────────────────────────────
+
+SEED = 42
+random.seed(SEED)
+np.random.seed(SEED)
+torch.manual_seed(SEED)
+if torch.cuda.is_available():
+    torch.cuda.manual_seed_all(SEED)
+set_seed(SEED)
+
+# make CUDA ops deterministic (may be slower)
+torch.backends.cudnn.deterministic = True
+torch.backends.cudnn.benchmark = False
 
 # ─── 0. Logging setup ─────────────────────────────────────────────────────────
 LOG_FILE = "evaluation.log"
