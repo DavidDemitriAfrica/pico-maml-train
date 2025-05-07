@@ -133,10 +133,15 @@ for cfg in DATASET_CONFIGS:
         model = PicoForTokenClassification(config)
         logger.info("Wrapped LM into token‐classification model")
 
+        max_len = config.max_seq_len
+
         # 3d. Tokenize & align labels
         def tokenize_and_align_labels(examples):
             tokenized_inputs = tokenizer(
-                examples["tokens"], truncation=True, is_split_into_words=True
+                examples["tokens"],
+                truncation=True,
+                max_length=config.max_seq_len,
+                is_split_into_words=True,
             )
             all_labels = []
             for i, labs in enumerate(examples["ner_tags"]):
