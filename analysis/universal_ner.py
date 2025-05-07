@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+import json
 import logging
 import os
 import random
@@ -7,6 +8,7 @@ import evaluate
 import numpy as np
 import torch
 import torch.nn as nn
+import wandb
 from datasets import load_dataset
 from transformers import (
     AutoTokenizer,
@@ -105,6 +107,17 @@ for cfg in DATASET_CONFIGS:
 
     for model_name in MODEL_NAMES:
         logger.info(f"→ Evaluating model '{model_name}' on config='{cfg}'")
+
+        # ─── Initialize a new W&B run ──────────────────────────────────────────
+        run_id = f"ner_eval_{model_name.split('/')[-1]}_{cfg}"
+        wandb.init(
+            project="pico-maml",  # your W&B project
+            entity="pico-lm",  # your W&B entity/org
+            name=run_id,  # run name
+            tags=[run_id, "ner_eval"],  # tags list
+            reinit=True,  # allow multiple in one script
+        )
+        logger.info(f"Started W&B run: {run_id}")
 
         # 3a. Load *local* HF config & wrapper (which uses your src/model/pico_decoder.py)
         config = PicoDecoderHFConfig.from_pretrained(
@@ -212,7 +225,8 @@ for cfg in DATASET_CONFIGS:
             logging_steps=100,
             save_strategy="epoch",
             seed=SEED,
-            report_to=[],
+            report_to=["wandb"],
+            run_name=run_id,
         )
         trainer = Trainer(
             model=model,
@@ -234,3 +248,14 @@ for cfg in DATASET_CONFIGS:
         test_metrics = trainer.evaluate(tokenized["test"])
         logger.info(f"Test results for {model_name} on {cfg}: {test_metrics}")
         print(f"\n→ {model_name} / {cfg} / test: {test_metrics}")
+
+        # ─── Save metrics locally ─────────────────────────────────────────────
+        os.makedirs(output_dir, exist_ok=True)
+        metrics_path = os.path.join(output_dir, "test_metrics.json")
+        with open(metrics_path, "w") as f:
+            json.dump(test_metrics, f, indent=2)
+        logger.info(f"Saved test metrics to {metrics_path}")
+
+        # ─── Log metrics to W&B and finish run ───────────────────────────────
+        wandb.log(test_metrics)
+        wandb.finish()
