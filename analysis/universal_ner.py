@@ -98,6 +98,9 @@ for cfg in DATASET_CONFIGS:
         data_collator = DataCollatorForTokenClassification(tokenizer)
         logger.info("Data collator ready")
 
+        max_len = config.max_seq_len
+        logger.info(f"Enforcing max_seq_len={max_len} for tokenization")
+
         # 3c. Load the PicoDecoderHF (local) wrapper, not the remote AutoModel
         base_lm = PicoDecoderHF.from_pretrained(
             model_name, config=config, trust_remote_code=True
@@ -132,8 +135,6 @@ for cfg in DATASET_CONFIGS:
 
         model = PicoForTokenClassification(config)
         logger.info("Wrapped LM into token‐classification model")
-
-        max_len = config.max_seq_len
 
         # 3d. Tokenize & align labels
         def tokenize_and_align_labels(examples):
