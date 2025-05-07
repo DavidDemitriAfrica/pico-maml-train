@@ -73,6 +73,9 @@ class PrefixedWandbCallback(WandbCallback):
 
 # ─── 1. CONFIGURATION ─────────────────────────────────────────────────────────
 MODEL_NAMES = [
+    "pico-lm/pico-decoder-tiny",
+    "pico-lm/pico-decoder-small",
+    "pico-lm/pico-decoder-medium",
     "pico-lm/pico-decoder-large",
 ]
 DATASET_NAME = "universalner/universal_ner"
@@ -130,12 +133,12 @@ for cfg in DATASET_CONFIGS:
         logger.info(f"→ Evaluating model '{model_name}' on config='{cfg}'")
 
         # ─── Initialize a new W&B run ──────────────────────────────────────────
-        run_id = f"ner_eval_{model_name.split('/')[-1]}_{cfg}"
+        run_id = f"ner_eval_head_only_{model_name.split('/')[-1]}_{cfg}"
         wandb.init(
             project="pico-maml",  # your W&B project
             entity="pico-lm",  # your W&B entity/org
             name=run_id,  # run name
-            tags=[run_id, "ner_eval"],  # tags list
+            tags=[run_id, "ner_eval", "head_only"],  # tags list
             reinit=True,  # allow multiple in one script
         )
         logger.info(f"Started W&B run: {run_id}")
