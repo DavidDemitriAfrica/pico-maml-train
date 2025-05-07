@@ -73,13 +73,10 @@ class PrefixedWandbCallback(WandbCallback):
 
 # ─── 1. CONFIGURATION ─────────────────────────────────────────────────────────
 MODEL_NAMES = [
-    "pico-lm/pico-decoder-tiny",
-    "pico-lm/pico-decoder-small",
-    "pico-lm/pico-decoder-medium",
     "pico-lm/pico-decoder-large",
 ]
 DATASET_NAME = "universalner/universal_ner"
-DATASET_CONFIGS = ["en_ewt", "en_pud"]
+DATASET_CONFIGS = ["en_ewt"]
 SPLIT = "test"
 BATCH_SIZE = 16
 
