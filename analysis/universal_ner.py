@@ -196,6 +196,14 @@ for cfg in DATASET_CONFIGS:
         model = PicoForTokenClassification(config)
         logger.info("Wrapped LM into token‐classification model")
 
+        # ─── Freeze the PicoDecoder backbone ─────────────────────────────────
+        # We only want to train the classifier head; the pretrained decoder stays fixed.
+        for name, param in model.pico_decoder.named_parameters():
+            param.requires_grad = False
+        logger.info(
+            "Froze pico_decoder backbone; only the classifier head will be trained"
+        )
+
         # 3d. Tokenize & align labels
         def tokenize_and_align_labels(examples):
             tok = tokenizer(
