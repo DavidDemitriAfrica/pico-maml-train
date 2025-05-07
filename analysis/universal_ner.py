@@ -155,15 +155,16 @@ for cfg in DATASET_CONFIGS:
 
         # 3d. Tokenize & align labels
         def tokenize_and_align_labels(examples):
-            tokenized_inputs = tokenizer(
+            tok = tokenizer(
                 examples["tokens"],
                 truncation=True,
-                max_length=config.max_seq_len,
+                max_length=max_len,
+                padding="max_length",
                 is_split_into_words=True,
             )
             all_labels = []
             for i, labs in enumerate(examples["ner_tags"]):
-                word_ids, prev = tokenized_inputs.word_ids(batch_index=i), None
+                word_ids, prev = tok.word_ids(batch_index=i), None
                 label_ids = []
                 for wid in word_ids:
                     if wid is None:
@@ -173,9 +174,10 @@ for cfg in DATASET_CONFIGS:
                     else:
                         label_ids.append(-100)
                     prev = wid
+                # if sentence shorter than max_len, this is already padded to length max_len
                 all_labels.append(label_ids)
-            tokenized_inputs["labels"] = all_labels
-            return tokenized_inputs
+            tok["labels"] = all_labels
+            return tok
 
         logger.info("Applying tokenization & label alignment...")
         tokenized = ds.map(
