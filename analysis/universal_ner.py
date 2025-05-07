@@ -200,26 +200,35 @@ for cfg in DATASET_CONFIGS:
         log_dir = os.path.join("logs", model_name.replace("/", "_"), cfg)
         args = TrainingArguments(
             output_dir=output_dir,
+            per_device_train_batch_size=BATCH_SIZE,
             per_device_eval_batch_size=BATCH_SIZE,
-            do_train=False,
+            num_train_epochs=3,  # train for 3 epochs (adjust as you like)
+            do_train=True,
             do_eval=True,
+            evaluation_strategy="epoch",  # run validation at end of each epoch
             logging_dir=log_dir,
+            logging_steps=100,
+            save_strategy="epoch",
+            seed=SEED,
             report_to=[],
         )
-        logger.info(f"TrainerArguments: {args}")
-
         trainer = Trainer(
             model=model,
             args=args,
+            train_dataset=tokenized["train"],  # fine‐tune on train split
+            eval_dataset=tokenized["validation"],  # validate on validation split
             tokenizer=tokenizer,
             data_collator=data_collator,
             compute_metrics=compute_metrics,
-            eval_dataset=tokenized[SPLIT],
         )
-        logger.info("Trainer initialized with data collator and eval_dataset")
+        logger.info("Trainer initialized for fine‐tuning")
 
-        # 3f. Run evaluation
-        logger.info(f"Starting evaluation on split='{SPLIT}'")
-        metrics = trainer.evaluate()
-        logger.info(f"Results for {model_name} on {cfg}: {metrics}")
-        print(f"\n→ {model_name} / {cfg} / {SPLIT}: {metrics}")
+        # 3f. Fine‐tune the model
+        logger.info("Starting training")
+        trainer.train()
+
+        # 3g. Evaluate on the held‐out test set
+        logger.info("Training complete — evaluating on test split")
+        test_metrics = trainer.evaluate(tokenized["test"])
+        logger.info(f"Test results for {model_name} on {cfg}: {test_metrics}")
+        print(f"\n→ {model_name} / {cfg} / test: {test_metrics}")
