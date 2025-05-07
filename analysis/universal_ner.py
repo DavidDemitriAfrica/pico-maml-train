@@ -20,7 +20,7 @@ from transformers import (
 from transformers.modeling_outputs import TokenClassifierOutput
 
 # import your local HF wrapper & config
-from src.model.pico_decoder import PicoDecoderHF, PicoDecoderHFConfig
+from src.model.pico_decoder import PicoDecoderHF, PicoDecoderHFConfig, RoPE
 
 # ─── -1. Setting seeds for reproducibility ────────────────────────────────────
 
@@ -108,6 +108,10 @@ for cfg in DATASET_CONFIGS:
             trust_remote_code=True,  # still needed if you have remote custom code
         )
         config.num_labels = len(label_list)
+
+        # Reset RoPE buffer
+        RoPE._freqs_cis_tensor = None
+
         tokenizer = AutoTokenizer.from_pretrained(
             model_name, trust_remote_code=True, use_fast=True
         )
