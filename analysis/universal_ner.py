@@ -244,7 +244,7 @@ for cfg in DATASET_CONFIGS:
             dataloader_num_workers=4,
             logging_dir=log_dir,
             logging_steps=100,
-            save_strategy="epoch",
+            save_strategy="no",
             seed=SEED,
             report_to=["wandb"],
             run_name=run_id,
