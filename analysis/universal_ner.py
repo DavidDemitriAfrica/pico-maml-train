@@ -123,7 +123,8 @@ for cfg in DATASET_CONFIGS:
         data_collator = DataCollatorForTokenClassification(tokenizer)
         logger.info("Data collator ready")
 
-        max_len = config.max_seq_len
+        # only keep up to 128 tokens per example
+        max_len = min(128, config.max_seq_len)
         logger.info(f"Enforcing max_seq_len={max_len} for tokenization")
 
         # 3c. Load the PicoDecoderHF (local) wrapper, not the remote AutoModel
@@ -167,7 +168,6 @@ for cfg in DATASET_CONFIGS:
                 examples["tokens"],
                 truncation=True,
                 max_length=max_len,
-                padding="max_length",
                 is_split_into_words=True,
             )
             all_labels = []
@@ -206,6 +206,8 @@ for cfg in DATASET_CONFIGS:
             do_train=True,
             do_eval=True,
             evaluation_strategy="epoch",  # run validation at end of each epoch
+            fp16=True,
+            dataloader_num_workers=4,
             logging_dir=log_dir,
             logging_steps=100,
             save_strategy="epoch",
