@@ -80,7 +80,7 @@ MODEL_NAMES = [
 DATASET_NAME = "universalner/universal_ner"
 DATASET_CONFIGS = ["en_ewt"]
 SPLIT = "test"
-BATCH_SIZE = 1024
+BATCH_SIZE = 16
 
 # ─── 2. Metric ────────────────────────────────────────────────────────────────
 metric = evaluate.load("seqeval")
