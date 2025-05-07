@@ -70,7 +70,7 @@ def compute_metrics(pred):
 # ─── 3. Main evaluation loop ─────────────────────────────────────────────────
 for cfg in DATASET_CONFIGS:
     logger.info(f"Loading dataset {DATASET_NAME} config={cfg}")
-    ds = load_dataset(DATASET_NAME, cfg)
+    ds = load_dataset(DATASET_NAME, cfg, trust_remote_code=True)
     label_list = ds["train"].features["ner_tags"].feature.names
     logger.info(f"Found {len(label_list)} labels: {label_list}")
 
