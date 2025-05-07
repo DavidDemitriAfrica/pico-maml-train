@@ -9,6 +9,7 @@ from datasets import load_dataset
 from transformers import (
     AutoTokenizer,
     DataCollatorForTokenClassification,
+    EvalPrediction,
     PreTrainedModel,
     Trainer,
     TrainingArguments,
@@ -43,8 +44,11 @@ BATCH_SIZE = 16
 metric = evaluate.load("seqeval")
 
 
-def compute_metrics(pred):
-    logits, labels = pred
+def compute_metrics(eval_pred: EvalPrediction):
+    # eval_pred.predictions is a [batch, seq_len, num_labels] array
+    # eval_pred.label_ids   is a [batch, seq_len] array
+    logits = eval_pred.predictions
+    labels = eval_pred.label_ids
     preds = np.argmax(logits, axis=2)
     true_labels = [
         [
@@ -55,7 +59,11 @@ def compute_metrics(pred):
         for label_seq, pred_seq in zip(labels, preds)
     ]
     true_preds = [
-        [label_list[pred] for (label, p) in zip(label_seq, pred_seq) if label != -100]
+        [
+            label_list[pred]
+            for (label, pred) in zip(label_seq, pred_seq)
+            if label != -100
+        ]
         for label_seq, pred_seq in zip(labels, preds)
     ]
     res = metric.compute(predictions=true_preds, references=true_labels)
