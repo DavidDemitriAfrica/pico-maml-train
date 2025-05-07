@@ -19,6 +19,7 @@ from transformers import (
     TrainingArguments,
     set_seed,
 )
+from transformers.integrations import WandbCallback
 from transformers.modeling_outputs import TokenClassifierOutput
 
 # import your local HF wrapper & config
@@ -46,6 +47,29 @@ logging.basicConfig(
     handlers=[logging.FileHandler(LOG_FILE), logging.StreamHandler()],
 )
 logger = logging.getLogger(__name__)
+
+
+class PrefixedWandbCallback(WandbCallback):
+    def on_log(self, args, state, control, logs=None, **kwargs):
+        """
+        Intercept Trainer.log calls and re-log to W&B
+        with the appropriate 'ner/train/' or 'ner/validation/' prefix.
+        """
+        if logs is None:
+            return
+        step = state.global_step
+        wandb_logs = {}
+        for key, val in logs.items():
+            # evaluation metrics (validation during training) come prefixed by "eval_"
+            if key.startswith("eval_"):
+                clean = key[len("eval_") :]  # e.g. "loss", "f1"
+                wandb_logs[f"ner/validation/{clean}"] = val
+            else:
+                # everything else is training: loss, learning_rate, etc.
+                wandb_logs[f"ner/train/{key}"] = val
+        wandb.log(wandb_logs, step=step)
+        # no need to call super()
+
 
 # ─── 1. CONFIGURATION ─────────────────────────────────────────────────────────
 MODEL_NAMES = [
@@ -236,6 +260,7 @@ for cfg in DATASET_CONFIGS:
             tokenizer=tokenizer,
             data_collator=data_collator,
             compute_metrics=compute_metrics,
+            callbacks=[PrefixedWandbCallback],
         )
         logger.info("Trainer initialized for fine‐tuning")
 
@@ -246,6 +271,7 @@ for cfg in DATASET_CONFIGS:
         # 3g. Evaluate on the held‐out test set
         logger.info("Training complete — evaluating on test split")
         test_metrics = trainer.evaluate(tokenized["test"])
+        wandb.log({f"ner/test/{k}": v for k, v in test_metrics.items()})
         logger.info(f"Test results for {model_name} on {cfg}: {test_metrics}")
         print(f"\n→ {model_name} / {cfg} / test: {test_metrics}")
 
