@@ -81,41 +81,55 @@ MODEL_NAMES = [
 DATASET_NAME = "universalner/universal_ner"
 DATASET_CONFIGS = ["en_ewt"]
 SPLIT = "test"
-BATCH_SIZE = 16
+BATCH_SIZE = 1024
 
 # ─── 2. Metric ────────────────────────────────────────────────────────────────
 metric = evaluate.load("seqeval")
 
 
 def compute_metrics(eval_pred: EvalPrediction):
-    # eval_pred.predictions is a [batch, seq_len, num_labels] array
-    # eval_pred.label_ids   is a [batch, seq_len] array
-    logits = eval_pred.predictions
-    labels = eval_pred.label_ids
+    # unpack
+    logits = eval_pred.predictions  # (batch, seq_len, num_labels)
+    labels = eval_pred.label_ids  # (batch, seq_len)
+
     preds = np.argmax(logits, axis=2)
-    true_labels = [
-        [
+    # convert label ids → actual label strings, filter out -100
+    true_labels = []
+    true_preds = []
+    for lab_seq, prd_seq in zip(labels, preds):
+        tl = [
             label_list[label]
-            for (label, pred) in zip(label_seq, pred_seq)
+            for (label, pred) in zip(lab_seq, prd_seq)
             if label != -100
         ]
-        for label_seq, pred_seq in zip(labels, preds)
-    ]
-    true_preds = [
-        [
-            label_list[pred]
-            for (label, pred) in zip(label_seq, pred_seq)
-            if label != -100
+        tp = [
+            label_list[pred] for (label, pred) in zip(lab_seq, prd_seq) if label != -100
         ]
-        for label_seq, pred_seq in zip(labels, preds)
-    ]
+        true_labels.append(tl)
+        true_preds.append(tp)
+
+    # get the full seqeval breakdown
     res = metric.compute(predictions=true_preds, references=true_labels)
-    return {
+
+    # start flattening
+    metrics = {
         "precision": res["overall_precision"],
         "recall": res["overall_recall"],
         "f1": res["overall_f1"],
         "accuracy": res["overall_accuracy"],
     }
+
+    # per-entity metrics
+    for key, stats in res.items():
+        if isinstance(stats, dict):
+            # a tag like "PER", "LOC", etc.
+            # stats has keys: precision, recall, f1, number
+            metrics[f"{key}_precision"] = stats.get("precision", None)
+            metrics[f"{key}_recall"] = stats.get("recall", None)
+            metrics[f"{key}_f1"] = stats.get("f1", None)
+            metrics[f"{key}_support"] = stats.get("number", None)
+
+    return metrics
 
 
 # ─── 3. Main evaluation loop ─────────────────────────────────────────────────
