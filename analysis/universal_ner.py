@@ -1,5 +1,4 @@
 #!/usr/bin/env python3
-import json
 import logging
 import os
 import random
@@ -290,20 +289,27 @@ for cfg in DATASET_CONFIGS:
         logger.info("Starting training")
         trainer.train()
 
-        # 3g. Evaluate on the held‐out test set
+        # 3g. Evaluate on the held-out test set
         logger.info("Training complete — evaluating on test split")
-        test_metrics = trainer.evaluate(tokenized["test"])
-        wandb.log({f"ner/test/{k}": v for k, v in test_metrics.items()})
-        logger.info(f"Test results for {model_name} on {cfg}: {test_metrics}")
-        print(f"\n→ {model_name} / {cfg} / test: {test_metrics}")
+        raw_test = trainer.evaluate(tokenized["test"])
 
-        # ─── Save metrics locally ─────────────────────────────────────────────
-        os.makedirs(output_dir, exist_ok=True)
-        metrics_path = os.path.join(output_dir, "test_metrics.json")
-        with open(metrics_path, "w") as f:
-            json.dump(test_metrics, f, indent=2)
-        logger.info(f"Saved test metrics to {metrics_path}")
+        # split into overall test vs per-tag “in_depth”
+        test_logs = {}
+        for k, v in raw_test.items():
+            if not k.startswith("eval_"):
+                # things like epoch/runtime/samples_per_second → keep under test/
+                test_logs[f"test/{k}"] = v
+                continue
 
-        # ─── Log metrics to W&B and finish run ───────────────────────────────
-        wandb.log(test_metrics)
-        wandb.finish()
+            name = k[len("eval_") :]  # strip the eval_ prefix
+            # overall metrics
+            if name in ("loss", "precision", "recall", "f1", "accuracy"):
+                test_logs[f"test/{name}"] = v
+            else:
+                # per-entity metrics like "PER_precision", "LOC_f1", etc.
+                test_logs[f"in_depth/{name}"] = v
+
+        # log to W&B
+        wandb.log(test_logs)
+        logger.info(f"Test results for {model_name} on {cfg}: {test_logs}")
+        print(f"\n→ {model_name} / {cfg} / test: {test_logs}")
