@@ -53,20 +53,20 @@ class PrefixedWandbCallback(WandbCallback):
     def on_log(self, args, state, control, logs=None, **kwargs):
         """
         Intercept Trainer.log calls and re-log to W&B
-        with the appropriate 'ner/train/' or 'ner/validation/' prefix.
+        with the appropriate 'train/' or 'valid/' prefix.
         """
         if logs is None:
             return
         step = state.global_step
         wandb_logs = {}
         for key, val in logs.items():
-            # evaluation metrics (validation during training) come prefixed by "eval_"
+            # validation metrics come prefixed by "eval_"
             if key.startswith("eval_"):
                 clean = key[len("eval_") :]  # e.g. "loss", "f1"
-                wandb_logs[f"ner/validation/{clean}"] = val
+                wandb_logs[f"valid/{clean}"] = val
             else:
                 # everything else is training: loss, learning_rate, etc.
-                wandb_logs[f"ner/train/{key}"] = val
+                wandb_logs[f"train/{key}"] = val
         wandb.log(wandb_logs, step=step)
         # no need to call super()
 
