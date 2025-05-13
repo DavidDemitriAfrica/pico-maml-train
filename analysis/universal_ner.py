@@ -130,7 +130,7 @@ for cfg in DATASET_CONFIGS:
 
     for model_name in MODEL_NAMES:
         is_maml = model_name.startswith("davidafrica/pico-maml")
-        run_id = f"ner_finetune_{model_name.split('/')[-1]}_{cfg}"
+        run_id = f"ner_fulltune_{model_name.split('/')[-1]}_{cfg}"
         logger.info(f"→ W&B run: {run_id}")
 
         wandb.init(
