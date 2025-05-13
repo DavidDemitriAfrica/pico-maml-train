@@ -1,5 +1,4 @@
 #!/usr/bin/env python3
-import json
 import logging
 import os
 import random
@@ -276,9 +275,9 @@ for cfg in DATASET_CONFIGS:
         logger.info(f"Test results: {test_logs}")
         print(f"\n→ {run_id}: {test_logs}")
 
-        # ─── g) Save locally + finish
-        os.makedirs(output_dir, exist_ok=True)
-        with open(os.path.join(output_dir, "test_metrics.json"), "w") as f:
-            json.dump(test_logs, f, indent=2)
+        # ─── g) Save + finish
+        # os.makedirs(output_dir, exist_ok=True)
+        # with open(os.path.join(output_dir, "test_metrics.json"), "w") as f:
+        #    json.dump(test_logs, f, indent=2)
         wandb.finish()
         logger.info(f"Finished run {run_id}")
