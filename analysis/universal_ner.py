@@ -52,12 +52,12 @@ logger.info(f"MAML subfolder (for davidafrica/*): {SUBFOLDER}")
 # ─── 1. CONFIG ────────────────────────────────────────────────────────────────
 MODEL_NAMES = [
     # vanilla HF
-    "pico-lm/pico-decoder-tiny",
-    "pico-lm/pico-decoder-small",
-    "pico-lm/pico-decoder-medium",
-    "pico-lm/pico-decoder-large",
+    # "pico-lm/pico-decoder-tiny",
+    # "pico-lm/pico-decoder-small",
+    # "pico-lm/pico-decoder-medium",
+    # "pico-lm/pico-decoder-large",
     # MAML‐variants
-    "davidafrica/pico-maml-decoder-tiny",
+    # "davidafrica/pico-maml-decoder-tiny",
     "davidafrica/pico-maml-decoder-small",
     "davidafrica/pico-maml-decoder-medium",
     "davidafrica/pico-maml-decoder-large",
