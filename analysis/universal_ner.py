@@ -47,10 +47,8 @@ logger = logging.getLogger(__name__)
 
 # ─── 0.5. Select checkpoint at step 5000 ──────────────────────────────────────
 STEP = 5000
-CKPT_DIR = f"checkpoints/step_{STEP}"
-if not os.path.isdir(CKPT_DIR):
-    raise RuntimeError(f"Checkpoint directory not found: {CKPT_DIR}")
-logger.info(f"Using checkpoint directory: {CKPT_DIR}")
+SUBFOLDER = f"checkpoints/step_{STEP}"
+logger.info(f"Will load from repo’s subfolder: {SUBFOLDER}")
 
 # ─── 1. CONFIG ────────────────────────────────────────────────────────────────
 MODEL_NAMES = [
@@ -144,17 +142,27 @@ for cfg in DATASET_CONFIGS:
         )
 
         # ─── a) Load config, tokenizer, and model from CKPT_DIR
-        config = PicoDecoderHFConfig.from_pretrained(CKPT_DIR, trust_remote_code=True)
+        config = PicoDecoderHFConfig.from_pretrained(
+            model_name,
+            trust_remote_code=True,
+            subfolder=SUBFOLDER,
+        )
         config.num_labels = len(label_list)
         RoPE._freqs_cis_tensor = None
 
         tokenizer = AutoTokenizer.from_pretrained(
-            CKPT_DIR, trust_remote_code=True, use_fast=True
+            model_name,
+            trust_remote_code=True,
+            use_fast=True,
+            subfolder=SUBFOLDER,
         )
         data_collator = DataCollatorForTokenClassification(tokenizer)
 
         base_lm = PicoDecoderHF.from_pretrained(
-            CKPT_DIR, config=config, trust_remote_code=True
+            model_name,
+            config=config,
+            trust_remote_code=True,
+            subfolder=SUBFOLDER,
         )
 
         # ─── b) Wrap and freeze backbone
