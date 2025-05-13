@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+import json
 import logging
 import os
 import random
@@ -24,8 +25,7 @@ from transformers.modeling_outputs import TokenClassifierOutput
 # import your local HF wrapper & config
 from src.model.pico_decoder import PicoDecoderHF, PicoDecoderHFConfig, RoPE
 
-# ─── -1. Setting seeds for reproducibility ────────────────────────────────────
-
+# ─── -1. Seeds & Determinism ─────────────────────────────────────────────────
 SEED = 42
 random.seed(SEED)
 np.random.seed(SEED)
@@ -33,8 +33,6 @@ torch.manual_seed(SEED)
 if torch.cuda.is_available():
     torch.cuda.manual_seed_all(SEED)
 set_seed(SEED)
-
-# make CUDA ops deterministic (may be slower)
 torch.backends.cudnn.deterministic = True
 torch.backends.cudnn.benchmark = False
 
@@ -47,30 +45,14 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+# ─── 0.5. Select checkpoint at step 5000 ──────────────────────────────────────
+STEP = 5000
+CKPT_DIR = f"checkpoints/step_{STEP}"
+if not os.path.isdir(CKPT_DIR):
+    raise RuntimeError(f"Checkpoint directory not found: {CKPT_DIR}")
+logger.info(f"Using checkpoint directory: {CKPT_DIR}")
 
-class PrefixedWandbCallback(WandbCallback):
-    def on_log(self, args, state, control, logs=None, **kwargs):
-        """
-        Intercept Trainer.log calls and re-log to W&B
-        with the appropriate 'train/' or 'valid/' prefix.
-        """
-        if logs is None:
-            return
-        step = state.global_step
-        wandb_logs = {}
-        for key, val in logs.items():
-            # validation metrics come prefixed by "eval_"
-            if key.startswith("eval_"):
-                clean = key[len("eval_") :]  # e.g. "loss", "f1"
-                wandb_logs[f"valid/{clean}"] = val
-            else:
-                # everything else is training: loss, learning_rate, etc.
-                wandb_logs[f"train/{key}"] = val
-        wandb.log(wandb_logs, step=step)
-        # no need to call super()
-
-
-# ─── 1. CONFIGURATION ─────────────────────────────────────────────────────────
+# ─── 1. CONFIG ────────────────────────────────────────────────────────────────
 MODEL_NAMES = [
     "pico-lm/pico-decoder-tiny",
     "pico-lm/pico-decoder-small",
@@ -82,17 +64,32 @@ DATASET_CONFIGS = ["en_ewt"]
 SPLIT = "test"
 BATCH_SIZE = 16
 
-# ─── 2. Metric ────────────────────────────────────────────────────────────────
+
+# ─── 2. W&B callback for train/valid prefix ─────────────────────────────────
+class PrefixedWandbCallback(WandbCallback):
+    def on_log(self, args, state, control, logs=None, **kwargs):
+        if logs is None:
+            return
+        step = state.global_step
+        wandb_logs = {}
+        for key, val in logs.items():
+            if key.startswith("eval_"):
+                clean = key[len("eval_") :]
+                wandb_logs[f"valid/{clean}"] = val
+            else:
+                wandb_logs[f"train/{key}"] = val
+        wandb.log(wandb_logs, step=step)
+
+
+# ─── 3. Metric with per‐tag breakdown ─────────────────────────────────────────
 metric = evaluate.load("seqeval")
 
 
 def compute_metrics(eval_pred: EvalPrediction):
-    # unpack
-    logits = eval_pred.predictions  # (batch, seq_len, num_labels)
-    labels = eval_pred.label_ids  # (batch, seq_len)
-
+    logits = eval_pred.predictions
+    labels = eval_pred.label_ids
     preds = np.argmax(logits, axis=2)
-    # convert label ids → actual label strings, filter out -100
+
     true_labels = []
     true_preds = []
     for lab_seq, prd_seq in zip(labels, preds):
@@ -107,81 +104,60 @@ def compute_metrics(eval_pred: EvalPrediction):
         true_labels.append(tl)
         true_preds.append(tp)
 
-    # get the full seqeval breakdown
     res = metric.compute(predictions=true_preds, references=true_labels)
 
-    # start flattening
+    # overall
     metrics = {
         "precision": res["overall_precision"],
         "recall": res["overall_recall"],
         "f1": res["overall_f1"],
         "accuracy": res["overall_accuracy"],
     }
-
-    # per-entity metrics
-    for key, stats in res.items():
+    # per-entity
+    for ent, stats in res.items():
         if isinstance(stats, dict):
-            # a tag like "PER", "LOC", etc.
-            # stats has keys: precision, recall, f1, number
-            metrics[f"{key}_precision"] = stats.get("precision", None)
-            metrics[f"{key}_recall"] = stats.get("recall", None)
-            metrics[f"{key}_f1"] = stats.get("f1", None)
-            metrics[f"{key}_support"] = stats.get("number", None)
-
+            metrics[f"{ent}_precision"] = stats.get("precision")
+            metrics[f"{ent}_recall"] = stats.get("recall")
+            metrics[f"{ent}_f1"] = stats.get("f1")
+            metrics[f"{ent}_support"] = stats.get("number")
     return metrics
 
 
-# ─── 3. Main evaluation loop ─────────────────────────────────────────────────
+# ─── 4. Main evaluation loop ─────────────────────────────────────────────────
 for cfg in DATASET_CONFIGS:
     logger.info(f"Loading dataset {DATASET_NAME} config={cfg}")
     ds = load_dataset(DATASET_NAME, cfg, trust_remote_code=True)
-    if "train" in ds:
-        base = ds["train"]
-    else:
-        base = next(iter(ds.values()))
+    base = ds["train"] if "train" in ds else next(iter(ds.values()))
     label_list = base.features["ner_tags"].feature.names
     logger.info(f"Found {len(label_list)} labels: {label_list}")
 
     for model_name in MODEL_NAMES:
-        logger.info(f"→ Evaluating model '{model_name}' on config='{cfg}'")
+        run_id = f"ner_eval_head_only_step{STEP}_{model_name.split('/')[-1]}_{cfg}"
+        logger.info(f"→ Starting W&B run: {run_id}")
 
-        # ─── Initialize a new W&B run ──────────────────────────────────────────
-        run_id = f"ner_eval_head_only_{model_name.split('/')[-1]}_{cfg}"
         wandb.init(
-            project="pico-maml",  # your W&B project
-            entity="pico-lm",  # your W&B entity/org
-            name=run_id,  # run name
-            tags=[run_id, "ner_eval", "head_only"],  # tags list
-            reinit=True,  # allow multiple in one script
+            project="pico-maml",
+            entity="pico-lm",
+            name=run_id,
+            tags=[run_id, "ner_eval", "head_only"],
+            reinit=True,
         )
-        logger.info(f"Started W&B run: {run_id}")
 
-        # 3a. Load *local* HF config & wrapper (which uses your src/model/pico_decoder.py)
-        config = PicoDecoderHFConfig.from_pretrained(
-            model_name,
-            trust_remote_code=True,  # still needed if you have remote custom code
-        )
+        # ─── a) Load config, tokenizer, and model from CKPT_DIR
+        config = PicoDecoderHFConfig.from_pretrained(CKPT_DIR, trust_remote_code=True)
         config.num_labels = len(label_list)
-
-        # Reset RoPE buffer
         RoPE._freqs_cis_tensor = None
 
         tokenizer = AutoTokenizer.from_pretrained(
-            model_name, trust_remote_code=True, use_fast=True
+            CKPT_DIR, trust_remote_code=True, use_fast=True
         )
-
         data_collator = DataCollatorForTokenClassification(tokenizer)
-        logger.info("Data collator ready")
 
-        # only keep up to 128 tokens per example
-        max_len = min(128, config.max_seq_len)
-        logger.info(f"Enforcing max_seq_len={max_len} for tokenization")
-
-        # 3c. Load the PicoDecoderHF (local) wrapper, not the remote AutoModel
         base_lm = PicoDecoderHF.from_pretrained(
-            model_name, config=config, trust_remote_code=True
+            CKPT_DIR, config=config, trust_remote_code=True
         )
 
+        # ─── b) Wrap and freeze backbone
         class PicoForTokenClassification(PreTrainedModel):
             config_class = config.__class__
             base_model_prefix = "pico_decoder"
@@ -193,34 +169,25 @@ for cfg in DATASET_CONFIGS:
                 self.init_weights()
 
             def forward(self, input_ids, attention_mask=None, labels=None, **kwargs):
-                hidden_states, _ = self.pico_decoder(
-                    input_ids,
-                    past_key_values=None,
-                    use_cache=False,
-                    return_hidden=True,
+                hidden, _ = self.pico_decoder(
+                    input_ids, past_key_values=None, use_cache=False, return_hidden=True
                 )
-                logits = self.classifier(hidden_states)
+                logits = self.classifier(hidden)
                 loss = None
                 if labels is not None:
-                    loss_fct = nn.CrossEntropyLoss(ignore_index=-100)
-                    loss = loss_fct(
-                        logits.view(-1, self.config.num_labels),
-                        labels.view(-1),
+                    loss = nn.CrossEntropyLoss(ignore_index=-100)(
+                        logits.view(-1, config.num_labels), labels.view(-1)
                     )
                 return TokenClassifierOutput(loss=loss, logits=logits)
 
         model = PicoForTokenClassification(config)
-        logger.info("Wrapped LM into token‐classification model")
+        for _, p in model.pico_decoder.named_parameters():
+            p.requires_grad = False
+        logger.info("Froze pico_decoder backbone; training only the classifier head")
 
-        # ─── Freeze the PicoDecoder backbone ─────────────────────────────────
-        # We only want to train the classifier head; the pretrained decoder stays fixed.
-        for name, param in model.pico_decoder.named_parameters():
-            param.requires_grad = False
-        logger.info(
-            "Froze pico_decoder backbone; only the classifier head will be trained"
-        )
+        # ─── c) Tokenize & align labels
+        max_len = min(128, config.max_seq_len)
 
-        # 3d. Tokenize & align labels
         def tokenize_and_align_labels(examples):
             tok = tokenizer(
                 examples["tokens"],
@@ -228,21 +195,20 @@ for cfg in DATASET_CONFIGS:
                 max_length=max_len,
                 is_split_into_words=True,
             )
-            all_labels = []
+            lab_ids = []
             for i, labs in enumerate(examples["ner_tags"]):
-                word_ids, prev = tok.word_ids(batch_index=i), None
-                label_ids = []
-                for wid in word_ids:
+                wids, prev = tok.word_ids(batch_index=i), None
+                ids = []
+                for wid in wids:
                     if wid is None:
-                        label_ids.append(-100)
+                        ids.append(-100)
                     elif wid != prev:
-                        label_ids.append(labs[wid])
+                        ids.append(labs[wid])
                     else:
-                        label_ids.append(-100)
+                        ids.append(-100)
                     prev = wid
-                # if sentence shorter than max_len, this is already padded to length max_len
-                all_labels.append(label_ids)
-            tok["labels"] = all_labels
+                lab_ids.append(ids)
+            tok["labels"] = lab_ids
             return tok
 
         logger.info("Applying tokenization & label alignment...")
@@ -251,19 +217,19 @@ for cfg in DATASET_CONFIGS:
             batched=True,
             remove_columns=ds["train"].column_names,
         )
-        logger.info(f"Tokenized dataset columns: {tokenized.column_names}")
+        logger.info(f"Tokenized columns: {tokenized.column_names}")
 
-        # 3e. Trainer setup
+        # ─── d) Trainer setup
         output_dir = os.path.join("results", model_name.replace("/", "_"), cfg)
         log_dir = os.path.join("logs", model_name.replace("/", "_"), cfg)
         args = TrainingArguments(
             output_dir=output_dir,
             per_device_train_batch_size=BATCH_SIZE,
             per_device_eval_batch_size=BATCH_SIZE,
-            num_train_epochs=3,  # train for 3 epochs (adjust as you like)
+            num_train_epochs=3,
             do_train=True,
             do_eval=True,
-            evaluation_strategy="epoch",  # run validation at end of each epoch
+            evaluation_strategy="epoch",
             fp16=True,
             dataloader_num_workers=4,
             logging_dir=log_dir,
@@ -276,8 +242,8 @@ for cfg in DATASET_CONFIGS:
         trainer = Trainer(
             model=model,
             args=args,
-            train_dataset=tokenized["train"],  # fine‐tune on train split
-            eval_dataset=tokenized["validation"],  # validate on validation split
+            train_dataset=tokenized["train"],
+            eval_dataset=tokenized["validation"],
             tokenizer=tokenizer,
             data_collator=data_collator,
             compute_metrics=compute_metrics,
@@ -285,31 +251,33 @@ for cfg in DATASET_CONFIGS:
         )
         logger.info("Trainer initialized for fine‐tuning")
 
-        # 3f. Fine‐tune the model
-        logger.info("Starting training")
+        # ─── e) Train head only
+        logger.info("Starting training of classifier head")
         trainer.train()
 
-        # 3g. Evaluate on the held-out test set
+        # ─── f) Final test evaluation
         logger.info("Training complete — evaluating on test split")
         raw_test = trainer.evaluate(tokenized["test"])
 
-        # split into overall test vs per-tag “in_depth”
         test_logs = {}
         for k, v in raw_test.items():
             if not k.startswith("eval_"):
-                # things like epoch/runtime/samples_per_second → keep under test/
                 test_logs[f"test/{k}"] = v
                 continue
-
-            name = k[len("eval_") :]  # strip the eval_ prefix
-            # overall metrics
+            name = k[len("eval_") :]
             if name in ("loss", "precision", "recall", "f1", "accuracy"):
                 test_logs[f"test/{name}"] = v
             else:
-                # per-entity metrics like "PER_precision", "LOC_f1", etc.
                 test_logs[f"in_depth/{name}"] = v
 
-        # log to W&B
         wandb.log(test_logs)
-        logger.info(f"Test results for {model_name} on {cfg}: {test_logs}")
-        print(f"\n→ {model_name} / {cfg} / test: {test_logs}")
+        logger.info(f"Test results for {run_id}: {test_logs}")
+        print(f"\n→ {run_id}: {test_logs}")
+
+        # ─── g) Save test metrics locally
+        os.makedirs(output_dir, exist_ok=True)
+        with open(os.path.join(output_dir, "test_metrics.json"), "w") as f:
+            json.dump(test_logs, f, indent=2)
+
+        wandb.finish()
+        logger.info(f"Finished W&B run: {run_id}")
