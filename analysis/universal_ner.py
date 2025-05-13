@@ -54,10 +54,10 @@ logger.info(f"Using checkpoint directory: {CKPT_DIR}")
 
 # ─── 1. CONFIG ────────────────────────────────────────────────────────────────
 MODEL_NAMES = [
-    "pico-lm/pico-decoder-tiny",
-    "pico-lm/pico-decoder-small",
-    "pico-lm/pico-decoder-medium",
-    "pico-lm/pico-decoder-large",
+    "davidafrica/pico-maml-decoder-tiny",
+    "davidafrica/pico-maml-decoder-small",
+    "davidafrica/pico-maml-decoder-medium",
+    "davidafrica/pico-maml-decoder-large",
 ]
 DATASET_NAME = "universalner/universal_ner"
 DATASET_CONFIGS = ["en_ewt"]
