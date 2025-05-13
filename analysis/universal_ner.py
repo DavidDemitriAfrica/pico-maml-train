@@ -137,7 +137,7 @@ for cfg in DATASET_CONFIGS:
             project="pico-maml",
             entity="pico-lm",
             name=run_id,
-            tags=[run_id, "ner_finetune", "head_only"],
+            tags=[run_id, "ner_finetune", "full_model"],
             reinit=True,
         )
 
@@ -180,8 +180,8 @@ for cfg in DATASET_CONFIGS:
                 return TokenClassifierOutput(loss=loss, logits=logits)
 
         model = PicoForTokenClassification(config)
-        for _, p in model.pico_decoder.named_parameters():
-            p.requires_grad = False
+        # for _, p in model.pico_decoder.named_parameters():
+        # p.requires_grad = False
 
         # ─── c) Tokenize + align
         max_len = min(128, config.max_seq_len)
