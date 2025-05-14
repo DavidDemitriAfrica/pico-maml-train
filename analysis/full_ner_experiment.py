@@ -68,7 +68,7 @@ DATASET_CONFIGS = [
     "en_ewt",
     "hr_set",
     "pt_bosque",
-    "qaf_arabizi",
+    # "qaf_arabizi", # not actually available
     "sk_snk",
     "sr_set",
     "sv_talbanken",
