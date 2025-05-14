@@ -200,14 +200,26 @@ for finetune_cfg in FINETUNE_CONFIGS:
 
     for model_name in MODEL_NAMES:
         is_maml = model_name.startswith("davidafrica/pico-maml")
+
+        # derive size & variant
+        model_slug = model_name.split("/")[-1]  # e.g. "pico-maml-decoder-small"
+        size = model_slug.split("-")[-1]  # "small"
+        variant = "maml" if "maml" in model_slug else "vanilla"
+
         run_id = f"ner_fulltune_{model_name.split('/')[-1]}_{finetune_cfg}"
         logger.info(f"→ W&B run: {run_id}")
 
+        tags = [
+            f"size:{size}",  # e.g. "size:small"
+            f"variant:{variant}",  # "variant:maml" or "variant:vanilla"
+            f"lang:{finetune_cfg}",
+            "ner_finetune",
+        ]
         wandb.init(
             project="pico-maml",
             entity="pico-lm",
             name=run_id,
-            tags=[run_id, "ner_finetune", finetune_cfg],
+            tags=tags,
             reinit=True,
         )
 
