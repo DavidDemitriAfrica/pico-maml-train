@@ -101,6 +101,12 @@ BATCH_SIZE = 16
 NUM_EPOCHS = 10
 DATASET_NAME = "universalner/universal_ner"
 
+COMPLETED_FILE = "completed_runs.txt"
+if os.path.exists(COMPLETED_FILE):
+    completed = set(open(COMPLETED_FILE).read().splitlines())
+else:
+    completed = set()
+
 # ─── 1.5. Pre-load all individual datasets ────────────────────────────────────
 logger.info("Loading all UNER configs into memory…")
 ds_dict = {
@@ -191,6 +197,10 @@ for finetune_cfg in FINETUNE_CONFIGS:
         for mode in TUNE_MODES:
             # unique run name & tags
             run_id = f"ner_{variant}_{size}_{mode}_finetune_{finetune_cfg}"
+
+            if run_id in completed:
+                logger.info(f"Skipping {run_id} (already completed).")
+                continue
             tags = [
                 f"size:{size}",
                 f"variant:{variant}",
@@ -365,3 +375,5 @@ for finetune_cfg in FINETUNE_CONFIGS:
 
             wandb.finish()
             logger.info(f"Finished run {run_id}")
+            with open(COMPLETED_FILE, "a") as f:
+                f.write(run_id + "\n")
