@@ -154,31 +154,6 @@ def compute_metrics(eval_pred: EvalPrediction):
     return out
 
 
-# ─── tokenization + label alignment fn (unchanged) ────────────────────────────
-def tokenize_and_align_labels(examples):
-    tok = tokenizer(
-        examples["tokens"],
-        truncation=True,
-        max_length=min(128, config.max_seq_len),
-        is_split_into_words=True,
-    )
-    lab_ids = []
-    for i, labs in enumerate(examples["ner_tags"]):
-        wids, prev = tok.word_ids(batch_index=i), None
-        ids = []
-        for wid in wids:
-            if wid is None:
-                ids.append(-100)
-            elif wid != prev:
-                ids.append(labs[wid])
-            else:
-                ids.append(-100)
-            prev = wid
-        lab_ids.append(ids)
-    tok["labels"] = lab_ids
-    return tok
-
-
 # ─── 4. Main loop ────────────────────────────────────────────────────────────
 for finetune_cfg in FINETUNE_CONFIGS:
     # build train/validation
@@ -197,6 +172,30 @@ for finetune_cfg in FINETUNE_CONFIGS:
 
     # shared label list
     label_list = train_split.features["ner_tags"].feature.names
+
+    # ─── tokenization + label alignment fn (unchanged) ────────────────────────────
+    def tokenize_and_align_labels(examples):
+        tok = tokenizer(
+            examples["tokens"],
+            truncation=True,
+            max_length=min(128, config.max_seq_len),
+            is_split_into_words=True,
+        )
+        lab_ids = []
+        for i, labs in enumerate(examples["ner_tags"]):
+            wids, prev = tok.word_ids(batch_index=i), None
+            ids = []
+            for wid in wids:
+                if wid is None:
+                    ids.append(-100)
+                elif wid != prev:
+                    ids.append(labs[wid])
+                else:
+                    ids.append(-100)
+                prev = wid
+            lab_ids.append(ids)
+        tok["labels"] = lab_ids
+        return tok
 
     # tokenize
     tokenizer = AutoTokenizer.from_pretrained(
