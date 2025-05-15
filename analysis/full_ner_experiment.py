@@ -173,44 +173,10 @@ for finetune_cfg in FINETUNE_CONFIGS:
     # shared label list
     label_list = train_split.features["ner_tags"].feature.names
 
-    # ─── tokenization + label alignment fn (unchanged) ────────────────────────────
-    def tokenize_and_align_labels(examples):
-        tok = tokenizer(
-            examples["tokens"],
-            truncation=True,
-            max_length=min(128, config.max_seq_len),
-            is_split_into_words=True,
-        )
-        lab_ids = []
-        for i, labs in enumerate(examples["ner_tags"]):
-            wids, prev = tok.word_ids(batch_index=i), None
-            ids = []
-            for wid in wids:
-                if wid is None:
-                    ids.append(-100)
-                elif wid != prev:
-                    ids.append(labs[wid])
-                else:
-                    ids.append(-100)
-                prev = wid
-            lab_ids.append(ids)
-        tok["labels"] = lab_ids
-        return tok
-
     # tokenize
     tokenizer = AutoTokenizer.from_pretrained(
         MODEL_NAMES[0], use_fast=True
     )  # dummy to get tokenizer config
-    tokenized_train = train_split.map(
-        tokenize_and_align_labels,
-        batched=True,
-        remove_columns=train_split.column_names,
-    )
-    tokenized_val = val_split.map(
-        tokenize_and_align_labels,
-        batched=True,
-        remove_columns=val_split.column_names,
-    )
 
     for model_name in MODEL_NAMES:
         is_maml = model_name.startswith("davidafrica/pico-maml")
@@ -249,6 +215,30 @@ for finetune_cfg in FINETUNE_CONFIGS:
         tokenizer = AutoTokenizer.from_pretrained(model_name, use_fast=True, **load_kw)
         data_collator = DataCollatorForTokenClassification(tokenizer)
 
+        # ─── tokenization + label alignment fn (unchanged) ────────────────────────────
+        def tokenize_and_align_labels(examples):
+            tok = tokenizer(
+                examples["tokens"],
+                truncation=True,
+                max_length=min(128, config.max_seq_len),
+                is_split_into_words=True,
+            )
+            lab_ids = []
+            for i, labs in enumerate(examples["ner_tags"]):
+                wids, prev = tok.word_ids(batch_index=i), None
+                ids = []
+                for wid in wids:
+                    if wid is None:
+                        ids.append(-100)
+                    elif wid != prev:
+                        ids.append(labs[wid])
+                    else:
+                        ids.append(-100)
+                    prev = wid
+                lab_ids.append(ids)
+            tok["labels"] = lab_ids
+            return tok
+
         base_lm = PicoDecoderHF.from_pretrained(model_name, config=config, **load_kw)
 
         # define token‐classification wrapper (unchanged)
@@ -277,6 +267,19 @@ for finetune_cfg in FINETUNE_CONFIGS:
 
         model = PicoForTokenClassification(config)
 
+        tokenized_train = train_split.map(
+            tokenize_and_align_labels,
+            batched=True,
+            remove_columns=train_split.column_names,
+        )
+        tokenized_val = val_split.map(
+            tokenize_and_align_labels,
+            batched=True,
+            remove_columns=val_split.column_names,
+        )
+        logger.info(
+            f"Tokenized for {model_name}; columns now: {tokenized_train.column_names}"
+        )
         # d) Trainer args
         args = TrainingArguments(
             output_dir=os.path.join(
