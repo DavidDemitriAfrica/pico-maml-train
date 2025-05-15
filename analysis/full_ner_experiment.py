@@ -76,6 +76,9 @@ DATASET_CONFIGS = [
     "zh_gsdsimp",
 ]
 
+# these have no train/dev splits – we only eval on their test sets
+TEST_ONLY_CONFIGS = ["ceb_gja", "tl_trg", "tl_ugnayan"]
+
 # FINETUNE on each single dataset, then FINETUNE on ALL
 FINETUNE_CONFIGS = DATASET_CONFIGS + ["all"]
 
@@ -298,8 +301,15 @@ for finetune_cfg in FINETUNE_CONFIGS:
         trainer.train()
 
         # f) Evaluate *on every* dataset’s test split
-        for eval_cfg in DATASET_CONFIGS:
-            eval_ds = ds_dict[eval_cfg]["test"]
+        EVAL_CONFIGS = DATASET_CONFIGS + TEST_ONLY_CONFIGS
+        for eval_cfg in EVAL_CONFIGS:
+            if eval_cfg in ds_dict:
+                eval_ds = ds_dict[eval_cfg]["test"]
+            else:
+                # load on-the-fly for test-only configs
+                eval_ds = load_dataset(DATASET_NAME, eval_cfg, trust_remote_code=True)[
+                    "test"
+                ]
             tokenized_eval = eval_ds.map(
                 tokenize_and_align_labels,
                 batched=True,
