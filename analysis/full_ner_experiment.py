@@ -62,6 +62,8 @@ MODEL_NAMES = [
     "davidafrica/pico-maml-decoder-large",
 ]
 
+TUNE_MODES = ["head", "full"]
+
 # the ten UNER configs from the paper
 DATASET_CONFIGS = [
     "da_ddt",
@@ -186,156 +188,180 @@ for finetune_cfg in FINETUNE_CONFIGS:
         size = model_slug.split("-")[-1]  # "small"
         variant = "maml" if "maml" in model_slug else "vanilla"
 
-        run_id = f"ner_fulltune_{model_name.split('/')[-1]}_{finetune_cfg}"
-        logger.info(f"→ W&B run: {run_id}")
+        for mode in TUNE_MODES:
+            # unique run name & tags
+            run_id = f"ner_{variant}_{size}_{mode}_finetune_{finetune_cfg}"
+            tags = [
+                f"size:{size}",
+                f"variant:{variant}",
+                f"lang:{finetune_cfg}",
+                f"mode:{mode}",  # head vs full
+                "ner_finetune",
+            ]
 
-        tags = [
-            f"size:{size}",  # e.g. "size:small"
-            f"variant:{variant}",  # "variant:maml" or "variant:vanilla"
-            f"lang:{finetune_cfg}",
-            "ner_finetune",
-        ]
-        wandb.init(
-            project="pico-maml",
-            entity="pico-lm",
-            name=run_id,
-            tags=tags,
-            reinit=True,
-        )
-
-        # a) load config/tokenizer/model
-        load_kw = {"trust_remote_code": True}
-        if is_maml:
-            load_kw["subfolder"] = SUBFOLDER
-
-        config = PicoDecoderHFConfig.from_pretrained(model_name, **load_kw)
-        config.num_labels = len(label_list)
-        RoPE._freqs_cis_tensor = None
-
-        tokenizer = AutoTokenizer.from_pretrained(model_name, use_fast=True, **load_kw)
-        data_collator = DataCollatorForTokenClassification(tokenizer)
-
-        # ─── tokenization + label alignment fn (unchanged) ────────────────────────────
-        def tokenize_and_align_labels(examples):
-            tok = tokenizer(
-                examples["tokens"],
-                truncation=True,
-                max_length=min(128, config.max_seq_len),
-                is_split_into_words=True,
+            wandb.init(
+                project="pico-maml",
+                entity="pico-lm",
+                name=run_id,
+                tags=tags,
+                reinit=True,
             )
-            lab_ids = []
-            for i, labs in enumerate(examples["ner_tags"]):
-                wids, prev = tok.word_ids(batch_index=i), None
-                ids = []
-                for wid in wids:
-                    if wid is None:
-                        ids.append(-100)
-                    elif wid != prev:
-                        ids.append(labs[wid])
-                    else:
-                        ids.append(-100)
-                    prev = wid
-                lab_ids.append(ids)
-            tok["labels"] = lab_ids
-            return tok
 
-        base_lm = PicoDecoderHF.from_pretrained(model_name, config=config, **load_kw)
+            # a) load config/tokenizer/model
+            load_kw = {"trust_remote_code": True}
+            if is_maml:
+                load_kw["subfolder"] = SUBFOLDER
 
-        # define token‐classification wrapper (unchanged)
-        class PicoForTokenClassification(PreTrainedModel):
-            config_class = config.__class__
-            base_model_prefix = "pico_decoder"
+            config = PicoDecoderHFConfig.from_pretrained(model_name, **load_kw)
+            config.num_labels = len(label_list)
+            RoPE._freqs_cis_tensor = None
 
-            def __init__(self, config):
-                super().__init__(config)
-                self.pico_decoder = base_lm.pico_decoder
-                self.classifier = torch.nn.Linear(config.d_model, config.num_labels)
-                self.init_weights()
+            tokenizer = AutoTokenizer.from_pretrained(
+                model_name, use_fast=True, **load_kw
+            )
+            data_collator = DataCollatorForTokenClassification(tokenizer)
 
-            def forward(self, input_ids, attention_mask=None, labels=None, **kw):
-                hidden, _ = self.pico_decoder(
-                    input_ids, past_key_values=None, use_cache=False, return_hidden=True
+            # ─── tokenization + label alignment fn (unchanged) ────────────────────────────
+            def tokenize_and_align_labels(examples):
+                tok = tokenizer(
+                    examples["tokens"],
+                    truncation=True,
+                    max_length=min(128, config.max_seq_len),
+                    is_split_into_words=True,
                 )
-                logits = self.classifier(hidden)
-                loss = None
-                if labels is not None:
-                    loss = torch.nn.CrossEntropyLoss(ignore_index=-100)(
-                        logits.view(-1, config.num_labels),
-                        labels.view(-1),
+                lab_ids = []
+                for i, labs in enumerate(examples["ner_tags"]):
+                    wids, prev = tok.word_ids(batch_index=i), None
+                    ids = []
+                    for wid in wids:
+                        if wid is None:
+                            ids.append(-100)
+                        elif wid != prev:
+                            ids.append(labs[wid])
+                        else:
+                            ids.append(-100)
+                        prev = wid
+                    lab_ids.append(ids)
+                tok["labels"] = lab_ids
+                return tok
+
+            base_lm = PicoDecoderHF.from_pretrained(
+                model_name, config=config, **load_kw
+            )
+
+            # define token‐classification wrapper (unchanged)
+            class PicoForTokenClassification(PreTrainedModel):
+                config_class = config.__class__
+                base_model_prefix = "pico_decoder"
+
+                def __init__(self, config):
+                    super().__init__(config)
+                    self.pico_decoder = base_lm.pico_decoder
+                    self.classifier = torch.nn.Linear(config.d_model, config.num_labels)
+                    self.init_weights()
+
+                def forward(self, input_ids, attention_mask=None, labels=None, **kw):
+                    hidden, _ = self.pico_decoder(
+                        input_ids,
+                        past_key_values=None,
+                        use_cache=False,
+                        return_hidden=True,
                     )
-                return TokenClassifierOutput(loss=loss, logits=logits)
+                    logits = self.classifier(hidden)
+                    loss = None
+                    if labels is not None:
+                        loss = torch.nn.CrossEntropyLoss(ignore_index=-100)(
+                            logits.view(-1, config.num_labels),
+                            labels.view(-1),
+                        )
+                    return TokenClassifierOutput(loss=loss, logits=logits)
 
-        model = PicoForTokenClassification(config)
+            model = PicoForTokenClassification(config)
 
-        tokenized_train = train_split.map(
-            tokenize_and_align_labels,
-            batched=True,
-            remove_columns=train_split.column_names,
-        )
-        tokenized_val = val_split.map(
-            tokenize_and_align_labels,
-            batched=True,
-            remove_columns=val_split.column_names,
-        )
-        logger.info(
-            f"Tokenized for {model_name}; columns now: {tokenized_train.column_names}"
-        )
-        # d) Trainer args
-        args = TrainingArguments(
-            output_dir=os.path.join(
-                "results", model_name.replace("/", "_"), finetune_cfg
-            ),
-            per_device_train_batch_size=BATCH_SIZE,
-            per_device_eval_batch_size=BATCH_SIZE,
-            learning_rate=3e-5,
-            num_train_epochs=NUM_EPOCHS,
-            evaluation_strategy="steps",
-            eval_steps=500,
-            logging_strategy="steps",
-            logging_steps=500,
-            save_strategy="no",
-            seed=SEED,
-            fp16=True,
-            dataloader_num_workers=4,
-            report_to=["wandb"],
-        )
-        trainer = Trainer(
-            model=model,
-            args=args,
-            train_dataset=tokenized_train,
-            eval_dataset=tokenized_val,
-            tokenizer=tokenizer,
-            data_collator=data_collator,
-            compute_metrics=compute_metrics,
-            callbacks=[PrefixedWandbCallback],
-        )
-
-        # e) Train
-        logger.info("Training classifier head")
-        trainer.train()
-
-        # f) Evaluate *on every* dataset’s test split
-        EVAL_CONFIGS = DATASET_CONFIGS + TEST_ONLY_CONFIGS
-        for eval_cfg in EVAL_CONFIGS:
-            if eval_cfg in ds_dict:
-                eval_ds = ds_dict[eval_cfg]["test"]
+            if mode == "head":
+                # only train the head
+                for p in model.pico_decoder.parameters():
+                    p.requires_grad = False
             else:
-                # load on-the-fly for test-only configs
-                eval_ds = load_dataset(DATASET_NAME, eval_cfg, trust_remote_code=True)[
-                    "test"
-                ]
-            tokenized_eval = eval_ds.map(
+                # full fine-tune: ensure everything is trainable
+                for p in model.parameters():
+                    p.requires_grad = True
+
+            logger.info(
+                f"Training in {mode}-only mode"
+                if mode == "head"
+                else "Training full model"
+            )
+
+            tokenized_train = train_split.map(
                 tokenize_and_align_labels,
                 batched=True,
-                remove_columns=eval_ds.column_names,
+                remove_columns=train_split.column_names,
             )
-            raw = trainer.evaluate(tokenized_eval)
-            # flatten and tag logs so you can distinguish finetune_cfg→eval_cfg
-            test_logs = {}
-            for k, v in raw.items():
-                key = k[len("eval_") :] if k.startswith("eval_") else k
-                test_logs[f"{eval_cfg}/{key}"] = v
-            wandb.log(test_logs)
+            tokenized_val = val_split.map(
+                tokenize_and_align_labels,
+                batched=True,
+                remove_columns=val_split.column_names,
+            )
+            logger.info(
+                f"Tokenized for {model_name}; columns now: {tokenized_train.column_names}"
+            )
+            # d) Trainer args
+            args = TrainingArguments(
+                output_dir=os.path.join(
+                    "results", model_name.replace("/", "_"), f"finetune_cfg_{mode}"
+                ),
+                per_device_train_batch_size=BATCH_SIZE,
+                per_device_eval_batch_size=BATCH_SIZE,
+                learning_rate=3e-5,
+                num_train_epochs=NUM_EPOCHS,
+                evaluation_strategy="steps",
+                eval_steps=500,
+                logging_strategy="steps",
+                logging_steps=500,
+                save_strategy="no",
+                seed=SEED,
+                fp16=True,
+                dataloader_num_workers=4,
+                report_to=["wandb"],
+            )
+            trainer = Trainer(
+                model=model,
+                args=args,
+                train_dataset=tokenized_train,
+                eval_dataset=tokenized_val,
+                tokenizer=tokenizer,
+                data_collator=data_collator,
+                compute_metrics=compute_metrics,
+                callbacks=[PrefixedWandbCallback],
+            )
 
-        wandb.finish()
-        logger.info(f"Finished run {run_id}")
+            # e) Train
+            logger.info("Training classifier head")
+            trainer.train()
+
+            # f) Evaluate *on every* dataset’s test split
+            EVAL_CONFIGS = DATASET_CONFIGS + TEST_ONLY_CONFIGS
+            for eval_cfg in EVAL_CONFIGS:
+                if eval_cfg in ds_dict:
+                    eval_ds = ds_dict[eval_cfg]["test"]
+                else:
+                    # load on-the-fly for test-only configs
+                    eval_ds = load_dataset(
+                        DATASET_NAME, eval_cfg, trust_remote_code=True
+                    )["test"]
+                tokenized_eval = eval_ds.map(
+                    tokenize_and_align_labels,
+                    batched=True,
+                    remove_columns=eval_ds.column_names,
+                )
+                raw = trainer.evaluate(tokenized_eval)
+                # flatten and tag logs so you can distinguish finetune_cfg→eval_cfg
+                test_logs = {}
+                for k, v in raw.items():
+                    key = k[len("eval_") :] if k.startswith("eval_") else k
+                    test_logs[f"{eval_cfg}/{key}"] = v
+                wandb.log(test_logs)
+
+            wandb.finish()
+            logger.info(f"Finished run {run_id}")
