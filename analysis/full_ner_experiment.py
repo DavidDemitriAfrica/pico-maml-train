@@ -77,7 +77,19 @@ DATASET_CONFIGS = [
 ]
 
 # these have no train/dev splits – we only eval on their test sets
-TEST_ONLY_CONFIGS = ["ceb_gja", "tl_trg", "tl_ugnayan"]
+TEST_ONLY_CONFIGS = [
+    # the “low-resource” CE-TL sets
+    "ceb_gja",
+    "tl_trg",
+    "tl_ugnayan",
+    # the PUD sets from the paper
+    "de_pud",
+    "en_pud",
+    "pt_pud",
+    "ru_pud",
+    "sv_pud",
+    "zh_pud",
+]
 
 # FINETUNE on each single dataset, then FINETUNE on ALL
 FINETUNE_CONFIGS = DATASET_CONFIGS + ["all"]
