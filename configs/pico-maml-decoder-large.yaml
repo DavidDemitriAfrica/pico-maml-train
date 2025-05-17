@@ -1,4 +1,4 @@
-# runpod-pico-maml-decoder-tiny.yaml
+# runpod-pico-maml-decoder-large.yaml
 
 checkpointing:
   run_name: "pico-maml-decoder-large-1"
