@@ -16,25 +16,11 @@ from datasets import load_dataset
 from huggingface_hub import list_repo_files
 from torch.utils.data import DataLoader
 
-# ─── Monkey-patch out the RoPE assertion in get_freqs_cis ─────────────────────
+# ─── Monkey-patch RoPE to be identity ────────────────────────────────────────
 import src.model.pico_decoder as _pdmod
 from src.model.pico_decoder import PicoDecoderHF, PicoDecoderHFConfig, RoPE
 
-
-def _patched_get_freqs_cis(self, input_shape, start_pos, end_pos):
-    # always compute on the current preferred device
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    hidden_dim = input_shape[-1]
-    half = hidden_dim // 2
-    # generate the inverse freq vector
-    omega = 1.0 / (10000 ** (torch.arange(half, device=device) / half))
-    # time steps
-    t = torch.arange(start_pos, end_pos, device=device)
-    freqs = torch.outer(t, omega)
-    return torch.polar(torch.cos(freqs), torch.sin(freqs))
-
-
-_pdmod.RoPE.get_freqs_cis = _patched_get_freqs_cis
+_pdmod.RoPE.forward = lambda self, queries, keys, start_pos: (queries, keys)
 
 # ─── Reproducibility (no deterministic algorithms enforced) ─────────────────
 SEED = 42
