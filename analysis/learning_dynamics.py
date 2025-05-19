@@ -35,7 +35,11 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 # ─── Constants ───────────────────────────────────────────────────────────────
-SIZES = ["tiny", "small", "medium", "large"]
+SIZES = [  # "tiny",
+    "small",
+    "medium",
+    "large",
+]
 BASE_REPO = "davidafrica/pico-maml-decoder-{}"
 ENTITY = "pico-lm"
 PROJECT = "pico-maml-analysis"
