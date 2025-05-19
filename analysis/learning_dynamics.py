@@ -82,9 +82,9 @@ def process_variant(size: str):
         # fetch history of the four ER metrics
         hist = old.history(
             keys=[
-                "weights/mlp/ER",
+                "weights/attn/PER",
                 "weights/attn/ER",
-                "gradients/mlp/ER",
+                "gradients/attn/PER",
                 "gradients/attn/ER",
             ]
         )
