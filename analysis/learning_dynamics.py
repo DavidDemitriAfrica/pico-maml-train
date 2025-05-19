@@ -3,27 +3,17 @@ import logging
 import random
 import re
 
-import matplotlib.pyplot as plt
 import pandas as pd
 import torch
 import wandb
+from datasets import load_dataset
 from huggingface_hub import list_repo_files
-from lightning.fabric import Fabric
+from torch.utils.data import DataLoader
 
-from src.config.base import BaseComponentConfig
-
-# your dataset initialization utilities
-from src.config.data_config import DataConfig
-from src.config.training_config import TrainingConfig
-from src.data_utils import (
-    initialize_dataloader,
-    initialize_dataset,
-    # initialize_tokenizer,
-)
-from src.metrics._registry import get_metric
+# import your Pico model
 from src.model.pico_decoder import PicoDecoderHF, PicoDecoderHFConfig, RoPE
 
-# ─── Seeds & Determinism ───────────────────────────────────────────────────────
+# ─── Reproducibility ───────────────────────────────────────────────────────────
 SEED = 42
 random.seed(SEED)
 torch.manual_seed(SEED)
@@ -36,13 +26,19 @@ torch.backends.cudnn.benchmark = False
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# ─── Model variants ────────────────────────────────────────────────────────────
+# ─── Constants ─────────────────────────────────────────────────────────────────
 SIZES = ["tiny", "small", "medium", "large"]
 BASE_REPO = "davidafrica/pico-maml-decoder-{}"
+ENTITY = "pico-lm"
+PROJECT = "pico-maml-analysis"
+
+DATASET_NAME = "pico-lm/pretokenized-dolma"
+BATCH_SIZE = 8
 
 
-# ─── ER / PER computation ──────────────────────────────────────────────────────
+# ─── Helpers ───────────────────────────────────────────────────────────────────
 def compute_er_per(tensor: torch.Tensor):
+    """Return (effective_rank, proportional_effective_rank)."""
     mat = tensor.view(tensor.size(0), -1) if tensor.ndim > 2 else tensor
     S = torch.linalg.svd(mat, full_matrices=False).S
     p = S / S.sum()
@@ -52,160 +48,116 @@ def compute_er_per(tensor: torch.Tensor):
 
 
 def get_checkpoint_steps(repo_id):
+    """List all unique checkpoint step folders under checkpoints/."""
     files = list_repo_files(repo_id)
     steps = {m.group(1) for f in files if (m := re.match(r"checkpoints/(step_\d+)", f))}
     return sorted(steps, key=lambda s: int(s.split("_")[1]))
 
 
-# ─── Main processing function ─────────────────────────────────────────────────
-def process_variant(size: str):
+# ─── Main ─────────────────────────────────────────────────────────────────────
+def process_variant(size):
     repo_id = BASE_REPO.format(size)
     steps = get_checkpoint_steps(repo_id)
-    model_slug = repo_id.split("/")[-1]  # e.g. pico-maml-decoder-small
+    model_slug = repo_id.split("/")[-1]  # e.g. "pico-maml-decoder-small"
 
-    # start a new W&B run
+    # start W&B run
     run = wandb.init(
-        entity="pico-lm",
-        project="pico-maml-analysis",
+        entity=ENTITY,
+        project=PROJECT,
         name=f"{model_slug}_learning_dynamics",
         tags=["learning_dynamics", "variant:maml", f"size:{size}"],
         reinit=True,
     )
 
     records = []
-    per_metric = get_metric("per")()
-    components = {
-        "mlp": lambda n: "mlp" in n.lower(),
-        "attn": lambda n: ("attn" in n.lower()) or ("attention" in n.lower()),
-    }
-
-    # setup Fabric and data pipeline once per variant
-    fabric = Fabric(accelerator="cpu", devices=1)
-    data_conf = DataConfig()
-    dataset, _ = initialize_dataset(data_conf, fabric, return_fast_forward_steps=True)
-    # tokenizer = initialize_tokenizer(data_conf)
-    train_conf = TrainingConfig()
-    dataloader = initialize_dataloader(data_conf, train_conf, fabric, dataset)
-    batch_iter = iter(dataloader)
+    device = "cuda" if torch.cuda.is_available() else "cpu"
 
     for step_dir in steps:
         step = int(step_dir.split("_")[1])
         subfolder = f"checkpoints/{step_dir}"
 
-        # load model
+        # load config + model
         cfg = PicoDecoderHFConfig.from_pretrained(
             repo_id, trust_remote_code=True, subfolder=subfolder
         )
         RoPE._freqs_cis_tensor = None
         model = PicoDecoderHF.from_pretrained(
             repo_id, config=cfg, trust_remote_code=True, subfolder=subfolder
-        )
-        model.eval().to(fabric.device)
+        ).to(device)
+        model.eval()
 
-        # get one batch to populate gradients
-        try:
-            batch = next(batch_iter)
-        except StopIteration:
-            batch_iter = iter(dataloader)
-            batch = next(batch_iter)
+        # 1) collect all weight tensors
+        name2weights = {
+            n: p.detach().cpu() for n, p in model.named_parameters() if p.ndim >= 2
+        }
 
-        input_ids = torch.tensor(batch["input_ids"]).to(model.device)
+        # 2) pull one real batch, forward + backward to get grads
+        ds = load_dataset(DATASET_NAME, split="train", streaming=True)
+        loader = DataLoader(ds, batch_size=BATCH_SIZE, collate_fn=lambda b: b)
+        batch = next(iter(loader))
+        input_ids = torch.tensor([ex["input_ids"] for ex in batch], device=device)
         model.zero_grad()
-        outputs = model(input_ids, return_dict=True)
-        # dummy scalar loss
-        loss = outputs.logits.mean()
+        out = model(input_ids, return_dict=True)
+        loss = out.logits.mean()
         loss.backward()
 
-        # compute broken-down ER/PER
-        for data_type in ["weights", "gradients"]:
-            # assemble name→tensor map
-            name2tensor = {}
-            for name, param in model.named_parameters():
-                if param.ndim < 2:
-                    continue
-                if data_type == "weights":
-                    name2tensor[name] = param.detach().cpu()
-                else:
-                    if param.grad is not None:
-                        name2tensor[name] = param.grad.detach().cpu()
+        name2grads = {
+            n: p.grad.detach().cpu()
+            for n, p in model.named_parameters()
+            if (p.ndim >= 2 and p.grad is not None)
+        }
 
-            # for each component
-            for comp_name, name_filter in components.items():
+        # 3) break down by component
+        components = {
+            "mlp": lambda n: "mlp" in n.lower(),
+            "attn": lambda n: ("attn" in n.lower()) or ("attention" in n.lower()),
+        }
+
+        rec = {"step": step}
+        for data_type, name2tensor in [
+            ("weights", name2weights),
+            ("gradients", name2grads),
+        ]:
+            for comp, name_filter in components.items():
                 ers, pers = [], []
-                # validate component
-                cfg_base = BaseComponentConfig(
-                    component_name=comp_name, data_type=data_type
-                )
-                per_metric.validate_component(cfg_base)
-
-                for name, tensor in name2tensor.items():
-                    if name_filter(name):
-                        per = per_metric.compute_metric(tensor)
-                        er = per * tensor.numel()
-                        pers.append(per)
+                for n, t in name2tensor.items():
+                    if name_filter(n):
+                        er, per = compute_er_per(t)
                         ers.append(er)
-
+                        pers.append(per)
                 if not ers:
                     continue
-
                 avg_er = sum(ers) / len(ers)
                 avg_per = sum(pers) / len(pers)
                 # log to W&B
                 run.log(
                     {
-                        f"{data_type}/{comp_name}/ER": avg_er,
-                        f"{data_type}/{comp_name}/PER": avg_per,
+                        f"{data_type}/{comp}/ER": avg_er,
+                        f"{data_type}/{comp}/PER": avg_per,
                     },
                     step=step,
                 )
                 logger.info(
                     f"[{size}] step={step} "
-                    f"{data_type}/{comp_name} → ER={avg_er:.4f}, PER={avg_per:.4f}"
+                    f"{data_type}/{comp} → ER={avg_er:.4f}, PER={avg_per:.4f}"
                 )
+                # record for CSV
+                rec[f"{data_type}_{comp}_ER"] = avg_er
+                rec[f"{data_type}_{comp}_PER"] = avg_per
 
-        records.append(
-            {
-                "step": step,
-                **{
-                    f"{dt}_{cmp}_{mtr}": (avg_er if mtr == "ER" else avg_per)
-                    for dt in ["weights", "gradients"]
-                    for cmp in components
-                    for mtr, (avg_er, avg_per) in [
-                        (
-                            sum([x for x in ([avg_er] if dt == "weights" else [])]),
-                            sum([x for x in ([avg_per] if dt == "weights" else [])]),
-                        )
-                    ]
-                },
-            }
-        )
+        records.append(rec)
 
     run.finish()
 
-    # save local CSV + plot
+    # save CSV locally
     df = pd.DataFrame(records).sort_values("step")
-    csv_path = f"er_per_{size}.csv"
-    plot_path = f"er_per_{size}.png"
-    df.to_csv(csv_path, index=False)
-    logger.info(f"Saved {csv_path}")
-
-    plt.figure()
-    for dt in ["weights", "gradients"]:
-        for cmp in components:
-            plt.plot(df["step"], df[f"{dt}_{cmp}_PER"], label=f"{dt}/{cmp}/PER")
-    plt.xlabel("Step")
-    plt.ylabel("PER")
-    plt.title(f"PER over Training ({size})")
-    plt.legend()
-    plt.tight_layout()
-    plt.savefig(plot_path)
-    plt.close()
-    logger.info(f"Saved {plot_path}")
+    out_csv = f"er_per_breakdown_{size}.csv"
+    df.to_csv(out_csv, index=False)
+    logger.info(f"Saved {out_csv}")
 
 
-# ─── Entry point ───────────────────────────────────────────────────────────────
 if __name__ == "__main__":
-    # make sure: `wandb login` before running
+    # ensure `wandb login` has been run
     for sz in SIZES:
-        logger.info(f"==== Processing size={sz} ====")
+        logger.info(f"=== Processing size={sz} ===")
         process_variant(sz)
