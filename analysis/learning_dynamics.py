@@ -1,4 +1,10 @@
 #!/usr/bin/env python3
+import os
+
+# ─── Fix for deterministic CuBLAS operations ─────────────────────────────────
+# Must set BEFORE any CUDA/cuBLAS calls or torch.use_deterministic_algorithms()
+os.environ["CUBLAS_WORKSPACE_CONFIG"] = ":4096:8"
+
 import logging
 import random
 import re
@@ -10,23 +16,39 @@ from datasets import load_dataset
 from huggingface_hub import list_repo_files
 from torch.utils.data import DataLoader
 
-# import your Pico model
+# ─── Monkey-patch out the RoPE assertion in get_freqs_cis ─────────────────────
+import src.model.pico_decoder as _pdmod
 from src.model.pico_decoder import PicoDecoderHF, PicoDecoderHFConfig, RoPE
 
-# ─── Reproducibility ───────────────────────────────────────────────────────────
+
+def _patched_get_freqs_cis(self, input_shape, start_pos, end_pos):
+    # always compute on the current preferred device
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    hidden_dim = input_shape[-1]
+    half = hidden_dim // 2
+    # generate the inverse freq vector
+    omega = 1.0 / (10000 ** (torch.arange(half, device=device) / half))
+    # time steps
+    t = torch.arange(start_pos, end_pos, device=device)
+    freqs = torch.outer(t, omega)
+    return torch.polar(torch.cos(freqs), torch.sin(freqs))
+
+
+_pdmod.RoPE.get_freqs_cis = _patched_get_freqs_cis
+
+# ─── Reproducibility (no deterministic algorithms enforced) ─────────────────
 SEED = 42
 random.seed(SEED)
 torch.manual_seed(SEED)
 if torch.cuda.is_available():
     torch.cuda.manual_seed_all(SEED)
-torch.use_deterministic_algorithms(False)
 torch.backends.cudnn.benchmark = False
 
-# ─── Logging ───────────────────────────────────────────────────────────────────
+# ─── Logging ─────────────────────────────────────────────────────────────────
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# ─── Constants ─────────────────────────────────────────────────────────────────
+# ─── Constants ───────────────────────────────────────────────────────────────
 SIZES = ["tiny", "small", "medium", "large"]
 BASE_REPO = "davidafrica/pico-maml-decoder-{}"
 ENTITY = "pico-lm"
@@ -36,9 +58,9 @@ DATASET_NAME = "pico-lm/pretokenized-dolma"
 BATCH_SIZE = 8
 
 
-# ─── Helpers ───────────────────────────────────────────────────────────────────
+# ─── Helpers ─────────────────────────────────────────────────────────────────
 def compute_er_per(tensor: torch.Tensor):
-    """Return (effective_rank, proportional_effective_rank)."""
+    """Return (ER, PER) for a 2D matrix or  >2D tensor (flattened to 2D)."""
     mat = tensor.view(tensor.size(0), -1) if tensor.ndim > 2 else tensor
     S = torch.linalg.svd(mat, full_matrices=False).S
     p = S / S.sum()
@@ -48,54 +70,57 @@ def compute_er_per(tensor: torch.Tensor):
 
 
 def get_checkpoint_steps(repo_id):
-    """List all unique checkpoint step folders under checkpoints/."""
+    """Scan `checkpoints/step_*/` folders in HF repo."""
     files = list_repo_files(repo_id)
     steps = {m.group(1) for f in files if (m := re.match(r"checkpoints/(step_\d+)", f))}
     return sorted(steps, key=lambda s: int(s.split("_")[1]))
 
 
-# ─── Main ─────────────────────────────────────────────────────────────────────
-def process_variant(size):
+# ─── Main processing function ────────────────────────────────────────────────
+def process_variant(size: str):
     repo_id = BASE_REPO.format(size)
     steps = get_checkpoint_steps(repo_id)
-    model_slug = repo_id.split("/")[-1]  # e.g. "pico-maml-decoder-small"
+    model_tag = repo_id.split("/")[-1]  # e.g. pico-maml-decoder-small
 
-    # start W&B run
     run = wandb.init(
         entity=ENTITY,
         project=PROJECT,
-        name=f"{model_slug}_learning_dynamics",
+        name=f"{model_tag}_learning_dynamics",
         tags=["learning_dynamics", "variant:maml", f"size:{size}"],
         reinit=True,
     )
 
-    records = []
     device = "cuda" if torch.cuda.is_available() else "cpu"
+    records = []
 
     for step_dir in steps:
         step = int(step_dir.split("_")[1])
         subfolder = f"checkpoints/{step_dir}"
 
-        # load config + model
+        # ─── Load model ────────────────────────────────────────────────────
         cfg = PicoDecoderHFConfig.from_pretrained(
             repo_id, trust_remote_code=True, subfolder=subfolder
         )
-        RoPE._freqs_cis_tensor = None
+        RoPE._freqs_cis_tensor = None  # reset cache
         model = PicoDecoderHF.from_pretrained(
             repo_id, config=cfg, trust_remote_code=True, subfolder=subfolder
         ).to(device)
         model.eval()
 
-        # 1) collect all weight tensors
+        # 1) Collect all weight tensors
         name2weights = {
             n: p.detach().cpu() for n, p in model.named_parameters() if p.ndim >= 2
         }
 
-        # 2) pull one real batch, forward + backward to get grads
-        ds = load_dataset(DATASET_NAME, split="train", streaming=True)
-        loader = DataLoader(ds, batch_size=BATCH_SIZE, collate_fn=lambda b: b)
-        batch = next(iter(loader))
-        input_ids = torch.tensor([ex["input_ids"] for ex in batch], device=device)
+        # 2) Pull one real batch → forward + backward for gradients
+        ds_loader = DataLoader(
+            load_dataset(DATASET_NAME, split="train", streaming=True),
+            batch_size=BATCH_SIZE,
+            collate_fn=lambda batch: {"input_ids": [ex["input_ids"] for ex in batch]},
+        )
+        batch = next(iter(ds_loader))
+        input_ids = torch.tensor(batch["input_ids"], device=device)
+
         model.zero_grad()
         out = model(input_ids, return_dict=True)
         loss = out.logits.mean()
@@ -107,7 +132,7 @@ def process_variant(size):
             if (p.ndim >= 2 and p.grad is not None)
         }
 
-        # 3) break down by component
+        # 3) Break down by component
         components = {
             "mlp": lambda n: "mlp" in n.lower(),
             "attn": lambda n: ("attn" in n.lower()) or ("attention" in n.lower()),
@@ -118,10 +143,10 @@ def process_variant(size):
             ("weights", name2weights),
             ("gradients", name2grads),
         ]:
-            for comp, name_filter in components.items():
+            for comp, filt in components.items():
                 ers, pers = [], []
                 for n, t in name2tensor.items():
-                    if name_filter(n):
+                    if filt(n):
                         er, per = compute_er_per(t)
                         ers.append(er)
                         pers.append(per)
@@ -129,6 +154,7 @@ def process_variant(size):
                     continue
                 avg_er = sum(ers) / len(ers)
                 avg_per = sum(pers) / len(pers)
+
                 # log to W&B
                 run.log(
                     {
@@ -141,7 +167,7 @@ def process_variant(size):
                     f"[{size}] step={step} "
                     f"{data_type}/{comp} → ER={avg_er:.4f}, PER={avg_per:.4f}"
                 )
-                # record for CSV
+
                 rec[f"{data_type}_{comp}_ER"] = avg_er
                 rec[f"{data_type}_{comp}_PER"] = avg_per
 
@@ -149,15 +175,17 @@ def process_variant(size):
 
     run.finish()
 
-    # save CSV locally
+    # Save CSV
     df = pd.DataFrame(records).sort_values("step")
     out_csv = f"er_per_breakdown_{size}.csv"
     df.to_csv(out_csv, index=False)
     logger.info(f"Saved {out_csv}")
 
 
+# ─── Entrypoint ───────────────────────────────────────────────────────────────
 if __name__ == "__main__":
-    # ensure `wandb login` has been run
+    # Ensure you've done `wandb login` in your environment
     for sz in SIZES:
         logger.info(f"=== Processing size={sz} ===")
         process_variant(sz)
+        logger.info(f"=== Finished size={sz} ===")
