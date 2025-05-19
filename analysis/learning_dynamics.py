@@ -36,8 +36,8 @@ logger = logging.getLogger(__name__)
 
 # ─── Constants ───────────────────────────────────────────────────────────────
 SIZES = [  # "tiny",
-    "small",
-    "medium",
+    # "small",
+    # "medium",
     "large",
 ]
 BASE_REPO = "davidafrica/pico-maml-decoder-{}"
