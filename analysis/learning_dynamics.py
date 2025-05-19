@@ -162,7 +162,16 @@ def process_variant(size: str):
                 rec[f"{data_type}_{comp}_PER"] = avg_per
 
         records.append(rec)
+        model.cpu()  # move tensors back to CPU
+        del model  # drop the Python object
+        # also drop any large locals
+        del name2weights, name2grads, ds_loader, batch, input_ids
+        torch.cuda.empty_cache()  # actually free GPU memory
+        import gc
 
+        gc.collect()  # collect orphaned Python objects
+
+    # now go on to the next step
     run.finish()
 
     # Save CSV
