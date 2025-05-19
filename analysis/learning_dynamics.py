@@ -82,13 +82,14 @@ def process_variant(size: str):
         # fetch history of the four ER metrics
         hist = old.history(
             keys=[
+                "_step",
                 "weights/attn/PER",
                 "weights/attn/ER",
                 "gradients/attn/PER",
                 "gradients/attn/ER",
             ]
         )
-        last_step = int(hist["step"].max()) if not hist.empty else 0
+        last_step = int(hist["_step"].max()) if not hist.empty else 0
 
         run = wandb.init(
             entity=ENTITY,
