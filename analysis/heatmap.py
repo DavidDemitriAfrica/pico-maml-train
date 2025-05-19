@@ -1,12 +1,15 @@
+import os
+
 import matplotlib.pyplot as plt
+import numpy as np
 import pandas as pd
 import wandb
 
-# 1. Configuration
+# ─── Configuration ────────────────────────────────────────────────────────────
 ENTITY = "pico-lm"
 PROJECT = "pico-maml"
 
-DATASET_CONFIGS = [
+IN_LANGUAGE = [
     "da_ddt",
     "en_ewt",
     "hr_set",
@@ -17,18 +20,12 @@ DATASET_CONFIGS = [
     "zh_gsd",
     "zh_gsdsimp",
 ]
-TEST_ONLY_CONFIGS = [
-    "ceb_gja",
-    "tl_trg",
-    "tl_ugnayan",
-    "de_pud",
-    "en_pud",
-    "pt_pud",
-    "ru_pud",
-    "sv_pud",
-    "zh_pud",
-]
-EVAL_CONFIGS = DATASET_CONFIGS + TEST_ONLY_CONFIGS
+PUD = ["de_pud", "en_pud", "pt_pud", "ru_pud", "sv_pud", "zh_pud"]
+OTHER = ["ceb_gja", "tl_trg", "tl_ugnayan"]
+
+EVAL_CONFIGS = IN_LANGUAGE + PUD + OTHER
+FINETUNE_CONFIGS = IN_LANGUAGE + ["all"]
+TUNE_MODES = ["head", "full"]
 
 MODEL_SLUGS = [
     "vanilla_tiny",
@@ -41,44 +38,109 @@ MODEL_SLUGS = [
     "maml_large",
 ]
 
-# 2. Fetch all runs and index by their run.name
+# ─── Prepare output directory ─────────────────────────────────────────────────
+output_dir = "heatmaps"
+os.makedirs(output_dir, exist_ok=True)
+
+# ─── Fetch runs from W&B ─────────────────────────────────────────────────────
 api = wandb.Api()
 all_runs = api.runs(f"{ENTITY}/{PROJECT}")
-runs_map = {run.name: run for run in all_runs}
+runs_map = {run.name: run.summary for run in all_runs}
 
-# 3. For each model, assemble a DataFrame of shape (finetune_cfg × eval_cfg)
+# ─── Plot and save heatmaps ───────────────────────────────────────────────────
 for slug in MODEL_SLUGS:
-    # Build the list of finetune configurations for this model
-    finetune_cfgs = DATASET_CONFIGS + ["all"]
+    for mode in TUNE_MODES:
+        # assemble matrix
+        matrix = []
+        for ft in FINETUNE_CONFIGS:
+            run_name = f"ner_{slug}_{mode}_finetune_{ft}"
+            summary = runs_map.get(run_name, {})
+            row = [summary.get(f"{cfg}/f1", np.nan) for cfg in EVAL_CONFIGS]
+            matrix.append(row)
+        df = pd.DataFrame(matrix, index=FINETUNE_CONFIGS, columns=EVAL_CONFIGS)
 
-    # Prepare a matrix to hold micro-F1 scores
-    data = []
-    for ft in finetune_cfgs:
-        run_name = f"ner_{slug}_full_finetune_{ft}"
-        run = runs_map.get(run_name)
-        if run is None:
-            # If missing, fill with NaNs
-            row = [float("nan")] * len(EVAL_CONFIGS)
-        else:
-            summary = run.summary
-            row = [summary.get(f"{cfg}/f1", float("nan")) for cfg in EVAL_CONFIGS]
-        data.append(row)
+        # create panels
+        fig, axes = plt.subplots(1, 3, figsize=(18, 6), constrained_layout=True)
+        cmap = "inferno"
+        vmin, vmax = 0.0, 1.0
 
-    df = pd.DataFrame(data, index=finetune_cfgs, columns=EVAL_CONFIGS)
+        # panel 0: In-Language
+        ax = axes[0]
+        im0 = ax.imshow(
+            df[IN_LANGUAGE].values, aspect="auto", cmap=cmap, vmin=vmin, vmax=vmax
+        )
+        ax.set_title("In-Language Results")
+        ax.set_xticks(range(len(IN_LANGUAGE)))
+        ax.set_xticklabels(IN_LANGUAGE, rotation=90)
+        ax.set_yticks(range(len(df.index)))
+        ax.set_yticklabels(df.index)
+        # annotate numbers and highlight diagonal
+        for i in range(df.shape[0]):
+            for j in range(len(IN_LANGUAGE)):
+                val = df.iloc[i, j]
+                if not np.isnan(val):
+                    ax.text(
+                        j,
+                        i,
+                        f"{val:.3f}",
+                        ha="center",
+                        va="center",
+                        color="white",
+                        fontsize=8,
+                    )
 
-    # 4. Plot heatmap for this model
-    plt.figure()
-    plt.imshow(df.values, aspect="auto")
-    plt.xticks(range(len(df.columns)), df.columns, rotation=90)
-    plt.yticks(range(len(df.index)), df.index)
-    plt.title(f"Micro-F1 heatmap: {slug} (full fine-tune)")
+        # panel 1: PUD
+        ax = axes[1]
+        im1 = ax.imshow(df[PUD].values, aspect="auto", cmap=cmap, vmin=vmin, vmax=vmax)
+        ax.set_title("PUD Results")
+        ax.set_xticks(range(len(PUD)))
+        ax.set_xticklabels(PUD, rotation=90)
+        ax.set_yticks([])  # no y-ticks
+        for i in range(df.shape[0]):
+            for j in range(len(PUD)):
+                val = df.iloc[i, len(IN_LANGUAGE) + j]
+                if not np.isnan(val):
+                    ax.text(
+                        j,
+                        i,
+                        f"{val:.3f}",
+                        ha="center",
+                        va="center",
+                        color="white",
+                        fontsize=8,
+                    )
 
-    # Annotate each cell with the F1 numeric value
-    for i in range(df.shape[0]):
-        for j in range(df.shape[1]):
-            val = df.iat[i, j]
-            if not pd.isna(val):
-                plt.text(j, i, f"{val:.3f}", ha="center", va="center")
+        # panel 2: Other
+        ax = axes[2]
+        im2 = ax.imshow(
+            df[OTHER].values, aspect="auto", cmap=cmap, vmin=vmin, vmax=vmax
+        )
+        ax.set_title("Other Results")
+        ax.set_xticks(range(len(OTHER)))
+        ax.set_xticklabels(OTHER, rotation=90)
+        ax.set_yticks([])
+        for i in range(df.shape[0]):
+            for j in range(len(OTHER)):
+                val = df.iloc[i, len(IN_LANGUAGE) + len(PUD) + j]
+                if not np.isnan(val):
+                    ax.text(
+                        j,
+                        i,
+                        f"{val:.3f}",
+                        ha="center",
+                        va="center",
+                        color="white",
+                        fontsize=8,
+                    )
 
-    plt.tight_layout()
-    plt.show()
+        # single colorbar
+        cbar = fig.colorbar(im2, ax=axes, fraction=0.046, pad=0.04)
+        cbar.set_label("Micro-F1")
+
+        title = f"{slug}_{mode}_heatmap.png"
+        fig.suptitle(f"{slug} ({mode} fine-tune) Micro-F1 Heatmap", fontsize=16)
+        # Save figure
+        fig.savefig(os.path.join(output_dir, title), dpi=300)
+        plt.close(fig)
+
+print(f"All heatmaps saved to ./{output_dir}/")
