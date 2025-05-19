@@ -55,7 +55,8 @@ def process_variant(size):
 
     # start a new W&B run
     run = wandb.init(
-        project="pico-lm/pico-maml-analysis",
+        entity="pico-lm",
+        project="pico-maml-analysis",
         name=f"{model_slug}_learning_dynamics",
         tags=["learning_dynamics", "variant:maml", f"size:{size}"],
         reinit=True,
