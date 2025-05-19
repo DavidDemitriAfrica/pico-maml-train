@@ -35,7 +35,8 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 # ─── Constants ───────────────────────────────────────────────────────────────
-SIZES = [  # "tiny",
+SIZES = [
+    # "tiny",
     # "small",
     # "medium",
     "large",
@@ -50,7 +51,7 @@ BATCH_SIZE = 8
 
 # ─── Helpers ─────────────────────────────────────────────────────────────────
 def compute_er_per(tensor: torch.Tensor):
-    """Return (ER, PER) for a 2D matrix or  >2D tensor (flattened to 2D)."""
+    """Return (ER, PER) for a 2D matrix or >2D tensor (flattened to 2D)."""
     mat = tensor.view(tensor.size(0), -1) if tensor.ndim > 2 else tensor
     S = torch.linalg.svd(mat, full_matrices=False).S
     p = S / S.sum()
@@ -71,23 +72,58 @@ def process_variant(size: str):
     repo_id = BASE_REPO.format(size)
     steps = get_checkpoint_steps(repo_id)
     model_tag = repo_id.split("/")[-1]  # e.g. pico-maml-decoder-small
+    run_name = f"{model_tag}_learning_dynamics"
 
-    run = wandb.init(
-        entity=ENTITY,
-        project=PROJECT,
-        name=f"{model_tag}_learning_dynamics",
-        tags=["learning_dynamics", "variant:maml", f"size:{size}"],
-        reinit=True,
-    )
+    # ─── Check for an existing run and resume if found ─────────────────────────
+    api = wandb.Api()
+    existing = api.runs(f"{ENTITY}/{PROJECT}", {"display_name": run_name})
+    if existing:
+        old = existing[0]
+        # fetch history of the four ER metrics
+        hist = old.history(
+            keys=[
+                "weights/mlp/ER",
+                "weights/attn/ER",
+                "gradients/mlp/ER",
+                "gradients/attn/ER",
+            ]
+        )
+        last_step = int(hist["step"].max()) if not hist.empty else 0
+
+        run = wandb.init(
+            entity=ENTITY,
+            project=PROJECT,
+            name=run_name,
+            id=old.id,
+            resume="allow",
+            tags=["learning_dynamics", "variant:maml", f"size:{size}"],
+            reinit=True,
+        )
+        logger.info(f"Resuming W&B run {old.id} from step {last_step}")
+    else:
+        last_step = 0
+        run = wandb.init(
+            entity=ENTITY,
+            project=PROJECT,
+            name=run_name,
+            tags=["learning_dynamics", "variant:maml", f"size:{size}"],
+            reinit=True,
+        )
+        logger.info(f"Starting new W&B run for {run_name}")
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
     records = []
 
     for step_dir in steps:
         step = int(step_dir.split("_")[1])
+        # ── skip already-logged steps ─────────────────────────────────────────
+        if step <= last_step:
+            logger.info(f"[{size}] skipping step {step} (already logged)")
+            continue
+
         subfolder = f"checkpoints/{step_dir}"
 
-        # ─── Load model ────────────────────────────────────────────────────
+        # ─── Load model ───────────────────────────────────────────────────────
         cfg = PicoDecoderHFConfig.from_pretrained(
             repo_id, trust_remote_code=True, subfolder=subfolder
         )
@@ -162,16 +198,15 @@ def process_variant(size: str):
                 rec[f"{data_type}_{comp}_PER"] = avg_per
 
         records.append(rec)
-        model.cpu()  # move tensors back to CPU
-        del model  # drop the Python object
-        # also drop any large locals
-        del name2weights, name2grads, ds_loader, batch, input_ids
-        torch.cuda.empty_cache()  # actually free GPU memory
+
+        # cleanup
+        model.cpu()
+        del model, name2weights, name2grads, ds_loader, batch, input_ids
+        torch.cuda.empty_cache()
         import gc
 
-        gc.collect()  # collect orphaned Python objects
+        gc.collect()
 
-    # now go on to the next step
     run.finish()
 
     # Save CSV
@@ -183,7 +218,6 @@ def process_variant(size: str):
 
 # ─── Entrypoint ───────────────────────────────────────────────────────────────
 if __name__ == "__main__":
-    # Ensure you've done `wandb login` in your environment
     for sz in SIZES:
         logger.info(f"=== Processing size={sz} ===")
         process_variant(sz)
