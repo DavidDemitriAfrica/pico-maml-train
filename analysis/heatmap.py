@@ -7,7 +7,7 @@ import wandb
 
 # ─── Configuration ────────────────────────────────────────────────────────────
 ENTITY = "pico-lm"
-PROJECT = "pico-maml"
+PROJECT = "pico-maml-analysis"
 
 IN_LANGUAGE = [
     "da_ddt",
@@ -24,7 +24,7 @@ PUD = ["de_pud", "en_pud", "pt_pud", "ru_pud", "sv_pud", "zh_pud"]
 OTHER = ["ceb_gja", "tl_trg", "tl_ugnayan"]
 
 EVAL_CONFIGS = IN_LANGUAGE + PUD + OTHER
-FINETUNE_CONFIGS = IN_LANGUAGE + ["all"]
+FINETUNE_CONFIGS = ["en_ewt"]
 TUNE_MODES = ["head", "full"]
 
 MODEL_SLUGS = [
@@ -137,10 +137,56 @@ for slug in MODEL_SLUGS:
         cbar = fig.colorbar(im2, ax=axes, fraction=0.046, pad=0.04)
         cbar.set_label("Micro-F1")
 
-        title = f"{slug}_{mode}_heatmap.png"
-        fig.suptitle(f"{slug} ({mode} fine-tune) Micro-F1 Heatmap", fontsize=16)
+        title = f"{slug}_{mode}_heatmap_en_ewt.png"
+        fig.suptitle(
+            f"{slug} ({mode} fine-tune) Micro-F1 Heatmap - en_ewt", fontsize=16
+        )
         # Save figure
         fig.savefig(os.path.join(output_dir, title), dpi=300)
         plt.close(fig)
 
 print(f"All heatmaps saved to ./{output_dir}/")
+
+summary_rows = []
+
+for slug in MODEL_SLUGS:
+    row = [slug]
+    for mode in TUNE_MODES:
+        # Assemble matrix for all finetune configs
+        matrix = []
+        for ft in FINETUNE_CONFIGS:
+            run_name = f"ner_{slug}_{mode}_finetune_{ft}"
+            summary = runs_map.get(run_name, {})
+            row_vals = [summary.get(f"{cfg}/f1", np.nan) for cfg in EVAL_CONFIGS]
+            matrix.append(row_vals)
+        df = pd.DataFrame(matrix, index=FINETUNE_CONFIGS, columns=EVAL_CONFIGS)
+
+        # Compute mean across rows for each category
+        in_mean = df[IN_LANGUAGE].mean(axis=1).mean()
+        pud_mean = df[PUD].mean(axis=1).mean()
+        other_mean = df[OTHER].mean(axis=1).mean()
+        all_mean = df[EVAL_CONFIGS].mean(axis=1).mean()
+
+        row.extend([in_mean, pud_mean, other_mean, all_mean])
+    summary_rows.append(row)
+
+# Format output
+columns = [
+    "Model",
+    "In-Lang (Head)",
+    "PUD (Head)",
+    "Other (Head)",
+    "Mean (Head)",
+    "In-Lang (Full)",
+    "PUD (Full)",
+    "Other (Full)",
+    "Mean (Full)",
+]
+summary_df = pd.DataFrame(summary_rows, columns=columns)
+
+# Optional: Print LaTeX
+print(summary_df.to_latex(index=False, float_format="%.3f"))
+
+# Optional: Save
+summary_df.to_csv("summary_micro_f1_from_heatmaps_en_ewt.csv", index=False)
+print("Summary table saved as summary_micro_f1_from_heatmaps.csv")

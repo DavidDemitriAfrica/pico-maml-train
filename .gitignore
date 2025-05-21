@@ -176,3 +176,5 @@ wandb/
 *.local
 sbatch*
 *key*
+*.csv
+*.png
