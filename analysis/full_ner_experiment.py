@@ -210,7 +210,7 @@ for finetune_cfg in FINETUNE_CONFIGS:
             ]
 
             wandb.init(
-                project="pico-maml",
+                project="pico-maml-ner",
                 entity="pico-lm",
                 name=run_id,
                 tags=tags,
