@@ -44,7 +44,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # ─── 0.5. MAML subfolder ──────────────────────────────────────────────────────
-STEP = 5000
+STEP = 6000
 SUBFOLDER = f"checkpoints/step_{STEP}"
 logger.info(f"MAML subfolder (for davidafrica/*): {SUBFOLDER}")
 
@@ -219,8 +219,26 @@ for finetune_cfg in FINETUNE_CONFIGS:
 
             # a) load config/tokenizer/model
             load_kw = {"trust_remote_code": True}
+
             if is_maml:
                 load_kw["subfolder"] = SUBFOLDER
+            else:
+                commit_map = {
+                    "tiny": "8f42ded9c1c37cb188d68d46ba09aafa045a2a1d",
+                    "small": "1efec115d29eb94670bc3e62686c8b2b14acf2e0",
+                    "medium": "46f9b7e6fbb7a075600fe12de0b351b6363620cf",
+                    "large": "ce5fa8fe69acb265cf38773bd7f9c92325b863f3",
+                }
+                repo_map = {
+                    "tiny": "pico-decoder-tiny",
+                    "small": "pico-decoder-small",
+                    "medium": "pico-decoder-medium",
+                    "large": "pico-decoder-large",
+                }
+                # Replace model_name to correct repo
+                model_name = f"pico-lm/{repo_map[size]}"
+                # Set commit hash on correct branch
+                load_kw["revision"] = commit_map[size]
 
             config = PicoDecoderHFConfig.from_pretrained(model_name, **load_kw)
             config.num_labels = len(label_list)
