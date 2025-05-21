@@ -24,7 +24,7 @@ PUD = ["de_pud", "en_pud", "pt_pud", "ru_pud", "sv_pud", "zh_pud"]
 OTHER = ["ceb_gja", "tl_trg", "tl_ugnayan"]
 
 EVAL_CONFIGS = IN_LANGUAGE + PUD + OTHER
-FINETUNE_CONFIGS = ["en_ewt"]
+FINETUNE_CONFIGS = IN_LANGUAGE + ["all"]
 TUNE_MODES = ["head", "full"]
 
 MODEL_SLUGS = [
@@ -137,10 +137,8 @@ for slug in MODEL_SLUGS:
         cbar = fig.colorbar(im2, ax=axes, fraction=0.046, pad=0.04)
         cbar.set_label("Micro-F1")
 
-        title = f"{slug}_{mode}_heatmap_en_ewt.png"
-        fig.suptitle(
-            f"{slug} ({mode} fine-tune) Micro-F1 Heatmap - en_ewt", fontsize=16
-        )
+        title = f"{slug}_{mode}_heatmap.png"
+        fig.suptitle(f"{slug} ({mode} fine-tune) Micro-F1 Heatmap", fontsize=16)
         # Save figure
         fig.savefig(os.path.join(output_dir, title), dpi=300)
         plt.close(fig)
@@ -188,5 +186,5 @@ summary_df = pd.DataFrame(summary_rows, columns=columns)
 print(summary_df.to_latex(index=False, float_format="%.3f"))
 
 # Optional: Save
-summary_df.to_csv("summary_micro_f1_from_heatmaps_en_ewt.csv", index=False)
+summary_df.to_csv("summary_micro_f1_from_heatmaps.csv", index=False)
 print("Summary table saved as summary_micro_f1_from_heatmaps.csv")
