@@ -92,9 +92,7 @@ def compute_er_per(tensor: torch.Tensor):
 
 def get_checkpoint_steps(repo_id):
     files = list_repo_files(repo_id)
-    steps = {
-        m.group(1) for f in files if (m := re.match(r"checkpoints/(step_\\\\d+)", f))
-    }
+    steps = {m.group(1) for f in files if (m := re.match(r"checkpoints/(step_\d+)", f))}
     return sorted(steps, key=lambda s: int(s.split("_")[1]))
 
 
