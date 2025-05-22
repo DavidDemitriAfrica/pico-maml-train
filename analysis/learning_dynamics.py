@@ -178,9 +178,14 @@ def process_variant(size: str, variant: str):
                 ("gradients", name2grads),
             ]:
                 for comp, filt in components.items():
-                    ers, pers = zip(
-                        *[compute_er_per(t) for n, t in name2tensor.items() if filt(n)]
-                    )
+                    # collect (ER, PER) tuples for this component
+                    vals = [
+                        compute_er_per(t) for n, t in name2tensor.items() if filt(n)
+                    ]
+                    if not vals:
+                        # nothing to log for this comp
+                        continue
+                    ers, pers = zip(*vals)
                     avg_er, avg_per = sum(ers) / len(ers), sum(pers) / len(pers)
                     run.log(
                         {
