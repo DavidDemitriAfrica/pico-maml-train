@@ -103,11 +103,14 @@ def process_variant(size: str, variant: str):
         if is_maml
         else f"pico-lm/{REPO_MAP[size]}"
     )
-    step_list = (
-        [int(s.split("_")[1]) for s in get_checkpoint_steps(repo_id)]
-        if is_maml
-        else list(COMMIT_MAP[size].keys())
-    )
+    if is_maml:
+        # Only use checkpoints at 0,1000,2000,…,6000
+        available = {int(s.split("_")[1]) for s in get_checkpoint_steps(repo_id)}
+        MAML_STEPS = [0, 1000, 2000, 3000, 4000, 5000, 6000]
+        step_list = sorted(set(MAML_STEPS) & available)
+    else:
+        # Vanilla: use the explicit commit map steps
+        step_list = sorted(COMMIT_MAP[size].keys())
 
     model_tag = f"{variant}-{size}"
     run = wandb.init(
