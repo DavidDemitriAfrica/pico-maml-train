@@ -25,7 +25,7 @@ from src.model.pico_decoder import PicoDecoderHF, PicoDecoderHFConfig, RoPE
 # ─── Seeds & Determinism ──────────────────────────────────────────────────────
 SEED = 42
 random.seed(SEED)
-np.random.seed(SEED)
+pd.np.random.seed(SEED)
 torch.manual_seed(SEED)
 set_seed(SEED)
 torch.backends.cudnn.deterministic = True
@@ -48,7 +48,7 @@ BATCH_SIZE = 16
 MAX_EXAMPLES = 50
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 
-# ─── Entity classes to display ────────────────────────────────────────────────
+# ─── Entity classes ────────────────────────────────────────────────────────────
 en_classes = ["PER", "LOC", "ORG"]
 
 # ─── W&B init ────────────────────────────────────────────────────────────────
@@ -59,10 +59,14 @@ wandb.init(
     reinit=True,
 )
 
-# ─── Load label list and determine indices ─────────────────────────────────────
+# ─── Load label list and build class→indices map ───────────────────────────────
 ds_ft = load_dataset(DATASET, FT_SPLIT, trust_remote_code=True)
 label_list = ds_ft["train"].features["ner_tags"].feature.names
-class_indices = [label_list.index(c) for c in en_classes]
+# map each entity class to its B- and I- label indices
+class_idx_map = {
+    c: [i for i, lab in enumerate(label_list) if lab.endswith(f"-{c}")]
+    for c in en_classes
+}
 num_labels = len(label_list)
 
 # ─── Tokenizer + alignment ────────────────────────────────────────────────────
@@ -129,10 +133,7 @@ def load_head_only(model_id, revision=None, subfolder=None):
             loss = None
             if labels is not None:
                 loss = torch.nn.CrossEntropyLoss(ignore_index=-100)(
-                    logits.view(-1, config.num_labels),
-                    labels.view(
-                        -0,
-                    ),
+                    logits.view(-1, config.num_labels), labels.view(-1)
                 )
             return TokenClassifierOutput(loss=loss, logits=logits)
 
@@ -203,11 +204,7 @@ for idx, ex in enumerate(examples):
         max_length=128,
     ).to(DEVICE)
     wids, prev = enc.word_ids(batch_index=0), None
-    aligned = [
-        tags[wid] if wid is not None and wid != prev else -100
-        for wid in wids
-        for prev in ([wid] if False else [None])
-    ]
+    aligned = [tags[wid] if wid is not None and wid != prev else -100 for wid in wids]
     with torch.no_grad():
         lv = F.log_softmax(
             models["vanilla"](
@@ -227,9 +224,9 @@ for idx, ex in enumerate(examples):
         {
             "idx": idx,
             "sentence": " ".join(toks),
-            "van_lp": sum(lp_v) / len(lp_v),
-            "mam_lp": sum(lp_m) / len(lp_m),
-            "diff": sum(lp_m) / len(lp_m) - sum(lp_v) / len(lp_v),
+            "van_lp": np.mean(lp_v),
+            "mam_lp": np.mean(lp_m),
+            "diff": np.mean(lp_m) - np.mean(lp_v),
         }
     )
 
@@ -239,39 +236,49 @@ top_gain = df.nlargest(5, "diff")
 top_loss = df.nsmallest(5, "diff")
 
 
-# ─── Function: colored sentence plot ──────────────────────────────────────────
-def plot_colored_sentence(words, vals_v, vals_m, example_idx):
-    # normalize
-    norm = mcolors.Normalize(
-        vmin=min(min(vals_v), min(vals_m)), vmax=max(max(vals_v), max(vals_m))
-    )
+# ─── Function: plot per-class colored sentence ─────────────────────────────────
+def plot_class_colored(words, logps, example_idx):
+    # compute per-token log-prob for each class via logsumexp
+    class_vals = {}
+    for c, idxs in class_idx_map.items():
+        vals = torch.logsumexp(logps[:, idxs], dim=1).cpu().numpy()
+        class_vals[c] = vals
+
+    # normalize across all values for color mapping
+    all_vals = np.concatenate(list(class_vals.values()))
+    norm = mcolors.Normalize(vmin=all_vals.min(), vmax=all_vals.max())
     cmap = plt.cm.RdYlGn
+
     fig, axes = plt.subplots(
-        2, 1, figsize=(len(words) * 0.6, 2), constrained_layout=True
+        len(en_classes),
+        1,
+        figsize=(len(words) * 0.6, 2 * len(en_classes)),
+        constrained_layout=True,
     )
-    for ax, vals, label in zip(axes, [vals_v, vals_m], ["Vanilla", "MAML"]):
+    for ax, c in zip(axes, en_classes):
         ax.axis("off")
         x = 0.01
-        for w, v in zip(words, vals):
-            color = cmap(norm(v))
+        for w, v in zip(words, class_vals[c]):
             ax.text(
                 x,
                 0.5,
                 w,
                 fontsize=12,
-                bbox=dict(facecolor=color, edgecolor="none", boxstyle="round,pad=0.2"),
+                bbox=dict(
+                    facecolor=cmap(norm(v)), edgecolor="none", boxstyle="round,pad=0.2"
+                ),
                 va="center",
             )
             x += (len(w) + 1) * 0.04
-        ax.set_title(f"{label} log-probs", pad=10)
-    fname = f"colored_sent_{example_idx}.png"
+        ax.set_title(f"{c} log-prob", pad=10)
+
+    fname = f"class_colored_{example_idx}.png"
     plt.savefig(fname, dpi=300)
-    wandb.log({f"colored_sent_{example_idx}": wandb.Image(plt)})
+    wandb.log({f"class_colored_{example_idx}": wandb.Image(plt)})
     plt.close()
 
 
-# ─── Generate colored plots for top gain/loss ─────────────────────────────────
-variant = models
+# ─── Generate plots for top gain/loss ─────────────────────────────────────────
 for idx in list(top_gain["idx"]) + list(top_loss["idx"]):
     ex = examples[idx]
     toks = ex["tokens"]
@@ -282,49 +289,16 @@ for idx in list(top_gain["idx"]) + list(top_loss["idx"]):
         truncation=True,
         max_length=128,
     ).to(DEVICE)
-    wids, prev = enc.word_ids(batch_index=0), None
-    words = [
-        toks[wid]
-        for i, wid in enumerate(wids)
-        if wid is not None and wid != prev
-        for prev in ([wid] if False else [None])
-    ]
     with torch.no_grad():
-        lv = F.log_softmax(
-            models["vanilla"](
-                enc["input_ids"], attention_mask=enc["attention_mask"]
-            ).logits,
-            dim=-1,
-        )[0]
-        lm = F.log_softmax(
+        logps = F.log_softmax(
             models["maml"](
                 enc["input_ids"], attention_mask=enc["attention_mask"]
             ).logits,
             dim=-1,
         )[0]
-    vals_v = [
-        lv[i, tag].item()
-        for i, tag in enumerate(
-            [
-                label_list.index(ex["ner_tags"][wid])
-                for wid in wids
-                if wid is not None
-                and wid != (wids[wids.index(wid) - 1] if wids.index(wid) > 0 else None)
-            ]
-        )
-    ]
-    vals_m = [
-        lm[i, tag].item()
-        for i, tag in enumerate(
-            [
-                label_list.index(ex["ner_tags"][wid])
-                for wid in wids
-                if wid is not None
-                and wid != (wids[wids.index(wid) - 1] if wids.index(wid) > 0 else None)
-            ]
-        )
-    ]
-    plot_colored_sentence(words, vals_v, vals_m, idx)
+    wids, prev = enc.word_ids(batch_index=0), None
+    words = [toks[wid] for i, wid in enumerate(wids) if wid is not None and wid != prev]
+    plot_class_colored(words, logps, idx)
 
 # ─── Histogram of Δ log-probs ─────────────────────────────────────────────────
 plt.figure(figsize=(6, 4))
