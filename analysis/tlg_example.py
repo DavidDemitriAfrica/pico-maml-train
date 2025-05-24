@@ -168,7 +168,7 @@ for variant, mid, rev, sub in [
         remove_unused_columns=False,
         seed=SEED,
         fp16=False,
-        report_to=["wandz"],
+        report_to=["wandb"],
     )
     trainer = Trainer(
         model=model,
