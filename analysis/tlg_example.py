@@ -8,7 +8,6 @@ import pandas as pd
 import torch
 import torch.nn.functional as F
 import wandb
-from ace_tools import display_dataframe_to_user
 from datasets import load_dataset
 from transformers import (
     AutoTokenizer,
@@ -51,7 +50,6 @@ DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 # ─── W&B init ────────────────────────────────────────────────────────────────
 wandb.init(
     project="pico-maml-ner",
-    entity="pico-lm",
     job_type="head_only_enewt",
     name="head_only_enewt_tagalog_diff",
     reinit=True,
@@ -170,7 +168,7 @@ for variant, mid, rev, sub in [
         remove_unused_columns=False,
         seed=SEED,
         fp16=False,
-        report_to="none",
+        report_to=["wandz"],
     )
     trainer = Trainer(
         model=model,
@@ -210,8 +208,12 @@ for idx, ex in enumerate(examples):
         prev = wid
 
     with torch.no_grad():
-        logps_v = F.log_softmax(models["vanilla"](**enc).logits, dim=-1)
-        logps_m = F.log_softmax(models["maml"](**enc).logits, dim=-1)
+        out_v = models["vanilla"](
+            enc["input_ids"], attention_mask=enc["attention_mask"]
+        )
+        out_m = models["maml"](enc["input_ids"], attention_mask=enc["attention_mask"])
+        logps_v = F.log_softmax(out_v.logits, dim=-1)
+        logps_m = F.log_softmax(out_m.logits, dim=-1)
 
     lp_v = [logps_v[0, i, lab].item() for i, lab in enumerate(aligned) if lab != -100]
     lp_m = [logps_m[0, i, lab].item() for i, lab in enumerate(aligned) if lab != -100]
@@ -230,11 +232,19 @@ for idx, ex in enumerate(examples):
 
 df = pd.DataFrame(records)
 
-# ─── Display top gains & losses ───────────────────────────────────────────────
+# ─── Print and save top gains & losses ────────────────────────────────────────
 top_gain = df.nlargest(5, "diff_lp")
 top_loss = df.nsmallest(5, "diff_lp")
-display_dataframe_to_user("Top 5 MAML Gains (head-only en_ewt → tl_trg)", top_gain)
-display_dataframe_to_user("Top 5 MAML Losses", top_loss)
+
+print("\n--- Top 5 MAML Gains (head-only en_ewt → tl_trg) ---")
+print(top_gain[["example_idx", "diff_lp", "sentence"]].to_string(index=False))
+
+print("\n--- Top 5 MAML Losses ---")
+print(top_loss[["example_idx", "diff_lp", "sentence"]].to_string(index=False))
+
+# Save to CSV
+top_gain.to_csv("top5_maml_gains.csv", index=False)
+top_loss.to_csv("top5_maml_losses.csv", index=False)
 
 # ─── Histogram of Δ log-probs ─────────────────────────────────────────────────
 plt.style.use(["science", "no-latex"])
@@ -244,6 +254,11 @@ plt.title("Δ avg log-prob (MAML – Vanilla)")
 plt.xlabel("Log-prob difference")
 plt.ylabel("Count")
 plt.tight_layout()
+
+# Log histogram to W&B
 wandb.log({"head_only_enewt_diff_hist": wandb.Image(plt)})
+
+# Also save the plot locally
+plt.savefig("head_only_diff_hist.png")
 
 wandb.finish()
