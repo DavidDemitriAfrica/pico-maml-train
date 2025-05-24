@@ -7,7 +7,7 @@ import wandb
 
 # ─── Configuration ────────────────────────────────────────────────────────────
 ENTITY = "pico-lm"
-PROJECT = "pico-maml-analysis"
+PROJECT = "pico-maml-ner"
 
 IN_LANGUAGE = [
     "da_ddt",
