@@ -2,9 +2,7 @@
 import logging
 import random
 
-import matplotlib.pyplot as plt
 import numpy as np
-import pandas as pd
 import torch
 import torch.nn.functional as F
 import wandb
@@ -51,7 +49,7 @@ DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 wandb.init(
     project="pico-maml-ner",
     job_type="head_only_enewt",
-    name="head_only_enewt_tagalog_diff",
+    name="head_only_enewt_tagalog_diff_with_inline",
     reinit=True,
 )
 
@@ -87,12 +85,7 @@ def tokenize_and_align_labels(examples):
 
 
 # ─── Head-only model loader ───────────────────────────────────────────────────
-commit_map = {
-    "tiny": "8f42ded9c1c37cb188d68d46ba09aafa045a2a1d",
-    "small": "1efec115d29eb94670bc3e62686c8b2b14acf2e0",
-    "medium": "46f9b7e6fbb7a075600fe12de0b351b6363620cf",
-    "large": "ce5fa8fe69acb265cf38773bd7f9c92325b863f3",
-}
+commit_map = {"large": "ce5fa8fe69acb265cf38773bd7f9c92325b863f3"}
 
 
 def load_head_only(model_id, revision=None, subfolder=None):
@@ -107,7 +100,6 @@ def load_head_only(model_id, revision=None, subfolder=None):
     base = PicoDecoderHF.from_pretrained(
         model_id, config=config, **load_kw
     ).pico_decoder
-    # Freeze backbone
     for p in base.parameters():
         p.requires_grad = False
 
@@ -168,7 +160,7 @@ for variant, mid, rev, sub in [
         remove_unused_columns=False,
         seed=SEED,
         fp16=False,
-        report_to=["wandb"],
+        report_to="none",
     )
     trainer = Trainer(
         model=model,
@@ -182,8 +174,7 @@ for variant, mid, rev, sub in [
     trainer.train()
     models[variant] = model
 
-# ─── Tagalog evaluation + log-prob inspection ─────────────────────────────────
-records = []
+# ─── Evaluate + inline annotation ─────────────────────────────────────────────
 ds_eval = load_dataset(DATASET, EVAL_SPLIT, trust_remote_code=True)["test"]
 examples = [ex for ex in ds_eval if any(tag != 0 for tag in ex["ner_tags"])]
 examples = examples[:MAX_EXAMPLES]
@@ -199,66 +190,32 @@ for idx, ex in enumerate(examples):
         max_length=128,
     ).to(DEVICE)
     wids, prev = enc.word_ids(batch_index=0), None
-    aligned = []
-    for wid in wids:
-        if wid is None or wid == prev:
-            aligned.append(-100)
-        else:
-            aligned.append(tags[wid])
-        prev = wid
+    aligned = [
+        (i, tags[i]) for i, wid in enumerate(wids) if wid is not None and wid != prev
+    ]
 
     with torch.no_grad():
         out_v = models["vanilla"](
             enc["input_ids"], attention_mask=enc["attention_mask"]
         )
         out_m = models["maml"](enc["input_ids"], attention_mask=enc["attention_mask"])
-        logps_v = F.log_softmax(out_v.logits, dim=-1)
-        logps_m = F.log_softmax(out_m.logits, dim=-1)
+    probs_v = F.softmax(out_v.logits, dim=-1)[0]
+    probs_m = F.softmax(out_m.logits, dim=-1)[0]
 
-    lp_v = [logps_v[0, i, lab].item() for i, lab in enumerate(aligned) if lab != -100]
-    lp_m = [logps_m[0, i, lab].item() for i, lab in enumerate(aligned) if lab != -100]
-    avg_v = sum(lp_v) / len(lp_v)
-    avg_m = sum(lp_m) / len(lp_m)
+    # build inline annotation
+    annotated = []
+    for i, lab in aligned:
+        token = toks[wids[i]]
+        p_v = probs_v[i, lab].item()
+        p_m = probs_m[i, lab].item()
+        label = label_list[lab]
+        annotated.append(f"{token}({label},{p_m:.2f})")
+    sentence_inline = " ".join(annotated)
 
-    records.append(
-        {
-            "example_idx": idx,
-            "sentence": " ".join(toks),
-            "vanilla_lp": avg_v,
-            "maml_lp": avg_m,
-            "diff_lp": avg_m - avg_v,
-        }
-    )
+    print(f"\nExample {idx}: {sentence_inline}")
 
-df = pd.DataFrame(records)
-
-# ─── Print and save top gains & losses ────────────────────────────────────────
-top_gain = df.nlargest(5, "diff_lp")
-top_loss = df.nsmallest(5, "diff_lp")
-
-print("\n--- Top 5 MAML Gains (head-only en_ewt → tl_trg) ---")
-print(top_gain[["example_idx", "diff_lp", "sentence"]].to_string(index=False))
-
-print("\n--- Top 5 MAML Losses ---")
-print(top_loss[["example_idx", "diff_lp", "sentence"]].to_string(index=False))
-
-# Save to CSV
-top_gain.to_csv("top5_maml_gains.csv", index=False)
-top_loss.to_csv("top5_maml_losses.csv", index=False)
-
-# ─── Histogram of Δ log-probs ─────────────────────────────────────────────────
-plt.style.use(["science", "no-latex"])
-plt.figure(figsize=(6, 4))
-df["diff_lp"].hist(bins=20)
-plt.title("Δ avg log-prob (MAML – Vanilla)")
-plt.xlabel("Log-prob difference")
-plt.ylabel("Count")
-plt.tight_layout()
-
-# Log histogram to W&B
-wandb.log({"head_only_enewt_diff_hist": wandb.Image(plt)})
-
-# Also save the plot locally
-plt.savefig("head_only_diff_hist.png")
+    # save inline to file
+    with open(f"example_{idx}_inline.txt", "w") as f:
+        f.write(sentence_inline + "\n")
 
 wandb.finish()
