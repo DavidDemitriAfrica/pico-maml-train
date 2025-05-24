@@ -51,6 +51,7 @@ DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 # ─── W&B init ────────────────────────────────────────────────────────────────
 wandb.init(
     project="pico-maml-ner",
+    entity="pico-lm",
     job_type="head_only_enewt",
     name="head_only_enewt_tagalog_diff",
     reinit=True,
