@@ -6,6 +6,7 @@ import numpy as np
 import pandas as pd
 import torch
 import torch.nn.functional as F
+import wandb
 from datasets import load_dataset
 from transformers import AutoTokenizer, PicoDecoderHF, PicoDecoderHFConfig
 
@@ -14,19 +15,29 @@ SEED = 42
 random.seed(SEED)
 np.random.seed(SEED)
 torch.manual_seed(SEED)
+
 MODEL_NAME = "davidafrica/pico-maml-decoder-large"
 SUBFOLDER = "checkpoints/step_6000"
 DATASET = "universalner/universal_ner"
-TAGALOG_SPLITS = ["tl_trg"]
+TAGALOG_SPLITS = ["tl_trg", "tl_ugnayan"]
 MAX_EX = 50  # how many examples per split to inspect
+
+# ─── Initialize W&B for logging plots ────────────────────────────────────────
+wandb.init(
+    project="pico-maml-ner",
+    job_type="tagalog_inspect",
+    name="inspect_tagalog_logprob",
+    reinit=True,
+)
 
 # ─── Load model & tokenizer ──────────────────────────────────────────────────
 config = PicoDecoderHFConfig.from_pretrained(
     MODEL_NAME, trust_remote_code=True, subfolder=SUBFOLDER
 )
-# we only need the number of labels
+# set num_labels based on first split
 ds0 = load_dataset(DATASET, TAGALOG_SPLITS[0], trust_remote_code=True)
 config.num_labels = len(ds0["train"].features["ner_tags"].feature.names)
+
 model = PicoDecoderHF.from_pretrained(
     MODEL_NAME, config=config, trust_remote_code=True, subfolder=SUBFOLDER
 )
@@ -34,17 +45,20 @@ tokenizer = AutoTokenizer.from_pretrained(
     MODEL_NAME, trust_remote_code=True, subfolder=SUBFOLDER
 )
 
+# ─── Style using scienceplots ────────────────────────────────────────────────
+plt.style.use(["science", "no-latex"])
+
+# ─── Collect per-example avg log-probs ───────────────────────────────────────
 records = []
 for split in TAGALOG_SPLITS:
     ds = load_dataset(DATASET, split, trust_remote_code=True)["test"]
-    # collect a few that actually contain an entity
+    # filter sentences with at least one entity
     examples = [ex for ex in ds if any(tag != 0 for tag in ex["ner_tags"])]
     examples = examples[:MAX_EX]
 
     for idx, ex in enumerate(examples):
         toks = ex["tokens"]
         tags = ex["ner_tags"]
-        # tokenize + align
         tok = tokenizer(
             toks,
             is_split_into_words=True,
@@ -62,7 +76,6 @@ for split in TAGALOG_SPLITS:
                 aligned.append(tags[wid])
             prev = wid
 
-        # forward
         model.eval()
         with torch.no_grad():
             hidden, _ = model.pico_decoder(
@@ -71,7 +84,6 @@ for split in TAGALOG_SPLITS:
             logits = model.classifier(hidden)
             logps = F.log_softmax(logits, dim=-1)
 
-        # compute avg log‐prob on true labels
         lp_vals = [
             logps[0, i, lab].item() for i, lab in enumerate(aligned) if lab != -100
         ]
@@ -88,7 +100,7 @@ for split in TAGALOG_SPLITS:
 
 df = pd.DataFrame(records)
 
-# show hardest & easiest
+# ─── Print hardest & easiest examples ────────────────────────────────────────
 hardest = df.nsmallest(5, "avg_logprob")
 easiest = df.nlargest(5, "avg_logprob")
 
@@ -102,11 +114,15 @@ print(
     easiest[["split", "example_idx", "avg_logprob", "sentence"]].to_string(index=False)
 )
 
-# plot distribution
+# ─── Plot & log histogram to W&B ─────────────────────────────────────────────
 plt.figure(figsize=(6, 4))
 df["avg_logprob"].hist(bins=20)
-plt.title("Tagalog True‐token avg log‐prob distribution")
-plt.xlabel("Average token log‐prob")
+plt.title("Tagalog True-token avg log-prob")
+plt.xlabel("Average token log-prob")
 plt.ylabel("Count")
 plt.tight_layout()
-plt.show()
+
+wandb.log({"tagalog_logprob_hist": wandb.Image(plt)})
+
+# ─── Finish W&B run ─────────────────────────────────────────────────────────
+wandb.finish()
