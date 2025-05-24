@@ -235,50 +235,92 @@ df = pd.DataFrame(records)
 top_gain = df.nlargest(5, "diff")
 top_loss = df.nsmallest(5, "diff")
 
+# ─── Function: plot per-class comparison (Vanilla vs MAML vs Δ) ─────────
 
-# ─── Function: plot per-class colored sentence ─────────────────────────────────
-def plot_class_colored(words, logps, example_idx):
-    # compute per-token log-prob for each class via logsumexp
-    class_vals = {}
-    for c, idxs in class_idx_map.items():
-        vals = torch.logsumexp(logps[:, idxs], dim=1).cpu().numpy()
-        class_vals[c] = vals
 
-    # normalize across all values for color mapping
-    all_vals = np.concatenate(list(class_vals.values()))
-    norm = mcolors.Normalize(vmin=all_vals.min(), vmax=all_vals.max())
-    cmap = plt.cm.RdYlGn
-
+def plot_class_comparison(words, steps, logps_v, logps_m, example_idx):
+    """
+    Creates a 3×C grid: rows = [Vanilla, MAML, Δ(MAML–Vanilla)];
+    cols = entity classes (PER, LOC, ORG). Each word is colored by its log-prob value and
+    annotated with the numeric log-prob above.
+    """
+    n_classes = len(en_classes)
     fig, axes = plt.subplots(
-        len(en_classes),
-        1,
-        figsize=(len(words) * 0.6, 2 * len(en_classes)),
+        nrows=3,
+        ncols=n_classes,
+        figsize=(len(words) * 0.8, 2.5 * n_classes),
         constrained_layout=True,
     )
-    for ax, c in zip(axes, en_classes):
-        ax.axis("off")
-        x = 0.01
-        for w, v in zip(words, class_vals[c]):
-            ax.text(
-                x,
-                0.5,
-                w,
-                fontsize=12,
-                bbox=dict(
-                    facecolor=cmap(norm(v)), edgecolor="none", boxstyle="round,pad=0.2"
-                ),
-                va="center",
-            )
-            x += (len(w) + 1) * 0.04
-        ax.set_title(f"{c} log-prob", pad=10)
-
-    fname = f"class_colored_{example_idx}.png"
+    # compute per-class values per step
+    class_vals_v = {c: [] for c in en_classes}
+    class_vals_m = {c: [] for c in en_classes}
+    for step in steps:
+        for c, idxs in class_idx_map.items():
+            # logsumexp over B- and I- labels
+            val_v = torch.logsumexp(logps_v[step, idxs], dim=-1).item()
+            val_m = torch.logsumexp(logps_m[step, idxs], dim=-1).item()
+            class_vals_v[c].append(val_v)
+            class_vals_m[c].append(val_m)
+    # compute diffs
+    class_vals_d = {
+        c: [m - v for v, m in zip(class_vals_v[c], class_vals_m[c])] for c in en_classes
+    }
+    # normalize colors across all values
+    all_vals = np.concatenate(
+        [class_vals_v[c] + class_vals_m[c] + class_vals_d[c] for c in en_classes]
+    )
+    norm = mcolors.Normalize(vmin=all_vals.min(), vmax=all_vals.max())
+    cmap = plt.cm.RdYlGn
+    # row titles
+    row_titles = ["Vanilla", "MAML", "Δ MAML–Vanilla"]
+    for j, c in enumerate(en_classes):
+        for row, vals in enumerate([class_vals_v[c], class_vals_m[c], class_vals_d[c]]):
+            ax = axes[row][j]
+            ax.axis("off")
+            ax.set_xlim(-0.5, len(words) - 0.5)
+            ax.set_ylim(0, 1)
+            # annotate words and values
+            for i, w in enumerate(words):
+                x = i * 1.0
+                color = cmap(norm(vals[i]))
+                # word box
+                ax.text(
+                    x,
+                    0.3,
+                    w,
+                    fontsize=12,
+                    ha="center",
+                    va="center",
+                    bbox=dict(
+                        facecolor=color, edgecolor="none", boxstyle="round,pad=0.2"
+                    ),
+                )
+                # numeric value above
+                ax.text(
+                    x, 0.75, f"{vals[i]:.2f}", fontsize=10, ha="center", va="center"
+                )
+            # set column title on top row
+            if row == 0:
+                ax.set_title(c, pad=8, fontsize=14)
+            # set row label on first column
+            if j == 0:
+                ax.text(
+                    -0.8,
+                    0.5,
+                    row_titles[row],
+                    fontsize=12,
+                    ha="right",
+                    va="center",
+                    transform=ax.transAxes,
+                )
+    # save and log
+    fname = f"class_comparison_{example_idx}.png"
     plt.savefig(fname, dpi=300)
-    wandb.log({f"class_colored_{example_idx}": wandb.Image(plt)})
+    wandb.log({f"class_comp_{example_idx}": wandb.Image(plt)})
     plt.close()
 
 
-# ─── Generate plots for top gain/loss ─────────────────────────────────────────
+# ─── Generate comparison plots for top gain/loss examples ─────────────────────
 for idx in list(top_gain["idx"]) + list(top_loss["idx"]):
     ex = examples[idx]
     toks = ex["tokens"]
@@ -289,16 +331,26 @@ for idx in list(top_gain["idx"]) + list(top_loss["idx"]):
         truncation=True,
         max_length=128,
     ).to(DEVICE)
+    # extract unique word positions
+    wids = enc.word_ids(batch_index=0)
+    steps, words = [], []
+    prev = None
+    for i, wid in enumerate(wids):
+        if wid is not None and wid != prev:
+            steps.append(i)
+            words.append(toks[wid])
+            prev = wid
+    # compute log-probs for both variants
     with torch.no_grad():
-        logps = F.log_softmax(
-            models["maml"](
-                enc["input_ids"], attention_mask=enc["attention_mask"]
-            ).logits,
-            dim=-1,
-        )[0]
-    wids, prev = enc.word_ids(batch_index=0), None
-    words = [toks[wid] for i, wid in enumerate(wids) if wid is not None and wid != prev]
-    plot_class_colored(words, logps, idx)
+        logits_v = models["vanilla"](
+            enc["input_ids"], attention_mask=enc["attention_mask"]
+        ).logits[0]
+        logits_m = models["maml"](
+            enc["input_ids"], attention_mask=enc["attention_mask"]
+        ).logits[0]
+        logps_v = F.log_softmax(logits_v, dim=-1)
+        logps_m = F.log_softmax(logits_m, dim=-1)
+    plot_class_comparison(words, steps, logps_v, logps_m, idx)
 
 # ─── Histogram of Δ log-probs ─────────────────────────────────────────────────
 plt.figure(figsize=(6, 4))
