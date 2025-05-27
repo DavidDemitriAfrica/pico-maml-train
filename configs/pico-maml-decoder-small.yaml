@@ -45,13 +45,7 @@ smlmt:
     init_method: "xavier"
   k_shot: 4
   n_way: 32
-data:
-  dataset:
-    name: "pico-lm/pretokenized-dolma"
-    split: "train"
-    # no cache_dir so HF will stream into ephemeral storage
-  dataloader:
-    batch_size: 256         # 256 is the default, but we can override it here
+
 
 evaluation:
   paloma:

@@ -235,7 +235,7 @@ df = pd.DataFrame(records)
 top_gain = df.nlargest(5, "diff")
 top_loss = df.nsmallest(5, "diff")
 
-# ─── Function: plot per-class comparison (Vanilla vs MAML vs Δ) ─────────
+# ─── Plot per-class comparison (Vanilla vs MAML vs Δ) ─────────
 
 
 def plot_class_comparison(words, steps, logps_v, logps_m, example_idx):
