@@ -25,7 +25,7 @@ from src.model.pico_decoder import PicoDecoderHF, PicoDecoderHFConfig, RoPE
 # ─── Seeds & Determinism ──────────────────────────────────────────────────────
 SEED = 42
 random.seed(SEED)
-pd.random.seed(SEED)
+np.random.seed(SEED)
 torch.manual_seed(SEED)
 set_seed(SEED)
 torch.backends.cudnn.deterministic = True
