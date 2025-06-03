@@ -2,6 +2,7 @@
 import logging
 import random
 
+import matplotlib
 import matplotlib.colors as mcolors
 import matplotlib.pyplot as plt
 import numpy as np
@@ -35,7 +36,8 @@ torch.backends.cudnn.benchmark = False
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(message)s")
 logger = logging.getLogger()
 
-# ─── Matplotlib / NeurIPS-style setup ────────────────────────────────────────
+# 2) Disable use of an external LaTeX installation
+matplotlib.rcParams["text.usetex"] = False
 plt.rcParams.update(
     {
         "font.family": "serif",
@@ -53,7 +55,7 @@ plt.rcParams.update(
     }
 )
 # Use a clean style
-plt.style.use("seaborn-whitegrid")
+plt.style.use("science")
 # ───────────────────────────────────────────────────────────────────────────────
 
 # ─── Config ──────────────────────────────────────────────────────────────────
@@ -258,13 +260,16 @@ top_loss = df.nsmallest(5, "diff")
 
 
 # ─── Plot per-class Δ only ─────────────────────────────────────────────────────
-def plot_delta_only(words, steps, logps_v, logps_m, example_idx):
+# ─── Plot per‐class Δ only, with classes as rows ───────────────────────────────
+def plot_delta_only_as_rows(words, steps, logps_v, logps_m, example_idx):
     """
-    Creates a 1×C grid: cols = entity classes (PER, LOC, ORG). Each word is colored
-    by its Δ log-prob value (MAML–Vanilla) and there is a single colorbar on the side.
+    Creates a 3×1 grid: rows = entity classes (PER, LOC, ORG), 1 column.
+    The same sentence (words) is repeated in each row, but each row’s coloring
+    corresponds to the Δ log-prob (MAML–Vanilla) for that specific class.
+    A single colorbar on the right serves as the legend for all rows.
     """
-    n_classes = len(en_classes)
-    # compute per-class Δ values per step
+    n_classes = len(en_classes)  # 3
+    # 1) Compute per‐class Δ values per step
     class_vals_d = {c: [] for c in en_classes}
     for step in steps:
         for c, idxs in class_idx_map.items():
@@ -272,28 +277,30 @@ def plot_delta_only(words, steps, logps_v, logps_m, example_idx):
             val_m = torch.logsumexp(logps_m[step, idxs], dim=-1).item()
             class_vals_d[c].append(val_m - val_v)
 
-    # normalize colors for Δ
+    # 2) Gather all Δ’s to normalize color‐scale
     all_deltas = np.concatenate([class_vals_d[c] for c in en_classes])
     norm = mcolors.TwoSlopeNorm(
         vmin=all_deltas.min(), vcenter=0.0, vmax=all_deltas.max()
     )
     cmap = plt.cm.coolwarm
 
+    # 3) Create a 3×1 subplot grid (one row per class)
     fig, axes = plt.subplots(
-        nrows=1,
-        ncols=n_classes,
-        figsize=(len(words) * 0.8, 2.5),
+        nrows=n_classes,
+        ncols=1,
+        figsize=(len(words) * 0.8, n_classes * 2.5),
         constrained_layout=True,
     )
 
-    for j, c in enumerate(en_classes):
-        ax = axes[j]
+    for row_idx, c in enumerate(en_classes):
+        ax = axes[row_idx]
         ax.axis("off")
         ax.set_xlim(-0.5, len(words) - 0.5)
         ax.set_ylim(0, 1)
+
         deltas = class_vals_d[c]
         for i, w in enumerate(words):
-            x = i * 1.0
+            x = float(i)
             color = cmap(norm(deltas[i]))
             ax.text(
                 x,
@@ -304,19 +311,13 @@ def plot_delta_only(words, steps, logps_v, logps_m, example_idx):
                 va="center",
                 bbox=dict(facecolor=color, edgecolor="none", boxstyle="round,pad=0.2"),
             )
-        ax.set_title(f"{c}", pad=6)
-        # Add class label below words for clarity
+
+        # Label each row on the left with the class name
         ax.text(
-            0.5,
-            -0.3,
-            "Δ",
-            fontsize=11,
-            ha="center",
-            va="center",
-            transform=ax.transAxes,
+            -0.02, 0.5, c, fontsize=11, ha="right", va="center", transform=ax.transAxes
         )
 
-    # Add a single colorbar on the right
+    # 4) Add a single colorbar on the right for all three rows
     sm = plt.cm.ScalarMappable(cmap=cmap, norm=norm)
     sm.set_array([])
     cbar = fig.colorbar(sm, ax=axes, location="right", fraction=0.05, pad=0.02)
@@ -324,12 +325,15 @@ def plot_delta_only(words, steps, logps_v, logps_m, example_idx):
         "Δ log-prob (MAML–Vanilla)", rotation=270, labelpad=12, fontsize=11
     )
 
+    # 5) Add an overall title above the grid
     fig.suptitle(
-        f"Δ log-prob by Entity Class (Example {example_idx})", fontsize=13, y=1.05
+        f"Δ log-prob by Entity Class (Example {example_idx})", fontsize=13, y=1.02
     )
-    fname = f"class_comparison_delta_{example_idx}.png"
+
+    # 6) Save and log
+    fname = f"class_comparison_delta_rows_{example_idx}.png"
     plt.savefig(fname, dpi=300, bbox_inches="tight")
-    wandb.log({f"class_comp_delta_{example_idx}": wandb.Image(plt)})
+    wandb.log({f"class_comp_delta_rows_{example_idx}": wandb.Image(plt)})
     plt.close()
 
 
@@ -363,7 +367,7 @@ for idx in list(top_gain["idx"]) + list(top_loss["idx"]):
         ).logits[0]
         logps_v = F.log_softmax(logits_v, dim=-1)
         logps_m = F.log_softmax(logits_m, dim=-1)
-    plot_delta_only(words, steps, logps_v, logps_m, idx)
+    plot_delta_only_as_rows(words, steps, logps_v, logps_m, idx)
 
 # ─── Histogram of Δ log-probs ─────────────────────────────────────────────────
 plt.figure(figsize=(6, 4))
