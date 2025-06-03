@@ -178,3 +178,5 @@ sbatch*
 *key*
 *.csv
 *.png
+*.tex
+*.txt

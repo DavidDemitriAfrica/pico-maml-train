@@ -35,6 +35,27 @@ torch.backends.cudnn.benchmark = False
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(message)s")
 logger = logging.getLogger()
 
+# ─── Matplotlib / NeurIPS-style setup ────────────────────────────────────────
+plt.rcParams.update(
+    {
+        "font.family": "serif",
+        "font.serif": ["Times New Roman", "Times", "Palatino", "serif"],
+        "font.size": 11,
+        "axes.titlesize": 12,
+        "axes.labelsize": 11,
+        "axes.linewidth": 0.8,
+        "xtick.labelsize": 10,
+        "ytick.labelsize": 10,
+        "figure.titlesize": 13,
+        "legend.fontsize": 10,
+        "legend.frameon": False,
+        "text.usetex": False,  # set True if a TeX installation is available
+    }
+)
+# Use a clean style
+plt.style.use("seaborn-whitegrid")
+# ───────────────────────────────────────────────────────────────────────────────
+
 # ─── Config ──────────────────────────────────────────────────────────────────
 VANILLA_MODEL = "pico-lm/pico-decoder-large"
 MAML_MODEL = "davidafrica/pico-maml-decoder-large"
@@ -55,7 +76,7 @@ en_classes = ["PER", "LOC", "ORG"]
 wandb.init(
     project="pico-maml-ner",
     job_type="head_only_enewt",
-    name="head_only_enewt_colored",
+    name="head_only_enewt_delta",
     reinit=True,
 )
 
@@ -186,7 +207,7 @@ for variant, mid, rev, sub in [
     trainer.train()
     models[variant] = m
 
-# ─── Load evaluation set and pick examples ───────────────────────────────────
+# ─── Load evaluation set and pick examples ────────────────────────────────────
 ds_eval = load_dataset(DATASET, EVAL_SPLIT, trust_remote_code=True)["test"]
 examples = [ex for ex in ds_eval if any(tag != 0 for tag in ex["ner_tags"])][
     :MAX_EXAMPLES
@@ -235,92 +256,84 @@ df = pd.DataFrame(records)
 top_gain = df.nlargest(5, "diff")
 top_loss = df.nsmallest(5, "diff")
 
-# ─── Plot per-class comparison (Vanilla vs MAML vs Δ) ─────────
 
-
-def plot_class_comparison(words, steps, logps_v, logps_m, example_idx):
+# ─── Plot per-class Δ only ─────────────────────────────────────────────────────
+def plot_delta_only(words, steps, logps_v, logps_m, example_idx):
     """
-    Creates a 3×C grid: rows = [Vanilla, MAML, Δ(MAML–Vanilla)];
-    cols = entity classes (PER, LOC, ORG). Each word is colored by its log-prob value and
-    annotated with the numeric log-prob above.
+    Creates a 1×C grid: cols = entity classes (PER, LOC, ORG). Each word is colored
+    by its Δ log-prob value (MAML–Vanilla) and there is a single colorbar on the side.
     """
     n_classes = len(en_classes)
-    fig, axes = plt.subplots(
-        nrows=3,
-        ncols=n_classes,
-        figsize=(len(words) * 0.8, 2.5 * n_classes),
-        constrained_layout=True,
-    )
-    # compute per-class values per step
-    class_vals_v = {c: [] for c in en_classes}
-    class_vals_m = {c: [] for c in en_classes}
+    # compute per-class Δ values per step
+    class_vals_d = {c: [] for c in en_classes}
     for step in steps:
         for c, idxs in class_idx_map.items():
-            # logsumexp over B- and I- labels
             val_v = torch.logsumexp(logps_v[step, idxs], dim=-1).item()
             val_m = torch.logsumexp(logps_m[step, idxs], dim=-1).item()
-            class_vals_v[c].append(val_v)
-            class_vals_m[c].append(val_m)
-    # compute diffs
-    class_vals_d = {
-        c: [m - v for v, m in zip(class_vals_v[c], class_vals_m[c])] for c in en_classes
-    }
-    # normalize colors across all values
-    all_vals = np.concatenate(
-        [class_vals_v[c] + class_vals_m[c] + class_vals_d[c] for c in en_classes]
+            class_vals_d[c].append(val_m - val_v)
+
+    # normalize colors for Δ
+    all_deltas = np.concatenate([class_vals_d[c] for c in en_classes])
+    norm = mcolors.TwoSlopeNorm(
+        vmin=all_deltas.min(), vcenter=0.0, vmax=all_deltas.max()
     )
-    norm = mcolors.Normalize(vmin=all_vals.min(), vmax=all_vals.max())
-    cmap = plt.cm.RdYlGn
-    # row titles
-    row_titles = ["Vanilla", "MAML", "Δ MAML–Vanilla"]
+    cmap = plt.cm.coolwarm
+
+    fig, axes = plt.subplots(
+        nrows=1,
+        ncols=n_classes,
+        figsize=(len(words) * 0.8, 2.5),
+        constrained_layout=True,
+    )
+
     for j, c in enumerate(en_classes):
-        for row, vals in enumerate([class_vals_v[c], class_vals_m[c], class_vals_d[c]]):
-            ax = axes[row][j]
-            ax.axis("off")
-            ax.set_xlim(-0.5, len(words) - 0.5)
-            ax.set_ylim(0, 1)
-            # annotate words and values
-            for i, w in enumerate(words):
-                x = i * 1.0
-                color = cmap(norm(vals[i]))
-                # word box
-                ax.text(
-                    x,
-                    0.3,
-                    w,
-                    fontsize=12,
-                    ha="center",
-                    va="center",
-                    bbox=dict(
-                        facecolor=color, edgecolor="none", boxstyle="round,pad=0.2"
-                    ),
-                )
-                # numeric value above
-                ax.text(
-                    x, 0.75, f"{vals[i]:.2f}", fontsize=10, ha="center", va="center"
-                )
-            # set column title on top row
-            if row == 0:
-                ax.set_title(c, pad=8, fontsize=14)
-            # set row label on first column
-            if j == 0:
-                ax.text(
-                    -0.8,
-                    0.5,
-                    row_titles[row],
-                    fontsize=12,
-                    ha="right",
-                    va="center",
-                    transform=ax.transAxes,
-                )
-    # save and log
-    fname = f"class_comparison_{example_idx}.png"
-    plt.savefig(fname, dpi=300)
-    wandb.log({f"class_comp_{example_idx}": wandb.Image(plt)})
+        ax = axes[j]
+        ax.axis("off")
+        ax.set_xlim(-0.5, len(words) - 0.5)
+        ax.set_ylim(0, 1)
+        deltas = class_vals_d[c]
+        for i, w in enumerate(words):
+            x = i * 1.0
+            color = cmap(norm(deltas[i]))
+            ax.text(
+                x,
+                0.5,
+                w,
+                fontsize=11,
+                ha="center",
+                va="center",
+                bbox=dict(facecolor=color, edgecolor="none", boxstyle="round,pad=0.2"),
+            )
+        ax.set_title(f"{c}", pad=6)
+        # Add class label below words for clarity
+        ax.text(
+            0.5,
+            -0.3,
+            "Δ",
+            fontsize=11,
+            ha="center",
+            va="center",
+            transform=ax.transAxes,
+        )
+
+    # Add a single colorbar on the right
+    sm = plt.cm.ScalarMappable(cmap=cmap, norm=norm)
+    sm.set_array([])
+    cbar = fig.colorbar(sm, ax=axes, location="right", fraction=0.05, pad=0.02)
+    cbar.ax.set_ylabel(
+        "Δ log-prob (MAML–Vanilla)", rotation=270, labelpad=12, fontsize=11
+    )
+
+    fig.suptitle(
+        f"Δ log-prob by Entity Class (Example {example_idx})", fontsize=13, y=1.05
+    )
+    fname = f"class_comparison_delta_{example_idx}.png"
+    plt.savefig(fname, dpi=300, bbox_inches="tight")
+    wandb.log({f"class_comp_delta_{example_idx}": wandb.Image(plt)})
     plt.close()
 
 
-# ─── Generate comparison plots for top gain/loss examples ─────────────────────
+# ─── Generate comparison plots (Δ only) for top gain/loss examples ─────────
 for idx in list(top_gain["idx"]) + list(top_loss["idx"]):
     ex = examples[idx]
     toks = ex["tokens"]
@@ -350,16 +363,16 @@ for idx in list(top_gain["idx"]) + list(top_loss["idx"]):
         ).logits[0]
         logps_v = F.log_softmax(logits_v, dim=-1)
         logps_m = F.log_softmax(logits_m, dim=-1)
-    plot_class_comparison(words, steps, logps_v, logps_m, idx)
+    plot_delta_only(words, steps, logps_v, logps_m, idx)
 
 # ─── Histogram of Δ log-probs ─────────────────────────────────────────────────
 plt.figure(figsize=(6, 4))
-df["diff"].hist(bins=20)
-plt.title("Avg log-prob difference (MAML – Vanilla)")
+df["diff"].hist(bins=20, color="#4C72B0", edgecolor="black")
+plt.title("Avg log-prob difference (MAML – Vanilla)", pad=10)
 plt.xlabel("Log-prob difference")
 plt.ylabel("Count")
 plt.tight_layout()
-plt.savefig("diff_hist.png", dpi=300)
-wandb.log({"diff_hist": wandb.Image(plt)})
+plt.savefig("diff_hist_delta.png", dpi=300)
+wandb.log({"diff_hist_delta": wandb.Image(plt)})
 
 wandb.finish()

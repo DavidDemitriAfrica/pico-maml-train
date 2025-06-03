@@ -27,9 +27,9 @@ class SMLMTConfig:
       max_token_freq: Maximum frequency for a token to be considered maskable.
     """
 
-    enabled: bool = False
-    hybrid_ratio: float = 0.6
-    min_token_freq: int = 4
+    enabled: bool = True
+    hybrid_ratio: float = 0.5
+    min_token_freq: int = 10
     max_token_freq: int = 10000
     inner_steps: int = 10
     inner_lr: float = 0.001
