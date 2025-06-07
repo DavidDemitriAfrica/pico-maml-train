@@ -71,18 +71,7 @@ for metric in METRICS:
 head_avg.to_latex("heatmaps/head_avg_breakdown.tex", float_format="%.3f")
 full_avg.to_latex("heatmaps/full_avg_breakdown.tex", float_format="%.3f")
 
-# ─── 3) Compute vanilla vs. maml difference by size ───────────────────────────
-diff_head = pd.DataFrame(index=MODEL_SIZES, columns=METRICS, dtype=float)
-diff_full = pd.DataFrame(index=MODEL_SIZES, columns=METRICS, dtype=float)
-
-for size in MODEL_SIZES:
-    diff_head.loc[size] = head_avg.loc[f"maml_{size}"] - head_avg.loc[f"vanilla_{size}"]
-    diff_full.loc[size] = full_avg.loc[f"maml_{size}"] - full_avg.loc[f"vanilla_{size}"]
-
-# diff_head.to_latex("heatmaps/head_diff.tex", float_format="%.3f")
-# diff_full.to_latex("heatmaps/full_diff.tex", float_format="%.3f")
-
-# ─── Compute F1 difference (MAML minus Vanilla) by size ────────────────────────
+# ─── 3) Compute F1 difference (MAML minus Vanilla) by size ────────────────────
 diff_head = pd.DataFrame(index=MODEL_SIZES, columns=METRICS, dtype=float)
 diff_full = pd.DataFrame(index=MODEL_SIZES, columns=METRICS, dtype=float)
 for size in MODEL_SIZES:
@@ -94,29 +83,23 @@ fig, axes = plt.subplots(1, 2, figsize=(12, 4), sharey=True, constrained_layout=
 
 for ax, (diff_df, mode) in zip(axes, [(diff_head, "Head"), (diff_full, "Full")]):
     diff_df.plot.bar(ax=ax)
-    ax.set_xlabel("Model Size")
-    ax.set_ylabel("F1 difference (MAML minus Vanilla)")
-    ax.set_title(f"{mode} regime")
+    ax.set_xlabel("Model Size", fontsize=14)
+    ax.set_ylabel("Delta F1", fontsize=14)
+    ax.set_title(f"{mode} Regime", fontsize=16)
     ax.axhline(0, color="black", linewidth=0.8)
-    ax.legend(title="Tag", frameon=False, loc="upper left")
-    # Annotate bars with three-decimal precision
-    for p in ax.patches:
-        h = p.get_height()
-        ax.annotate(
-            f"{h:.3f}",
-            (p.get_x() + p.get_width() / 2, h),
-            ha="center",
-            va="bottom",
-            fontsize=12,
-        )
+    ax.legend(
+        title="Tag", frameon=False, loc="upper left", fontsize=12, title_fontsize=13
+    )
+    # Removed bar annotations for cleaner visualization
+    ax.tick_params(axis="both", which="major", labelsize=12)
 
-fig.suptitle("MAML vs. Vanilla: F1 Improvement by Tag and Regime")
+fig.suptitle("MAML vs. Vanilla: F1 Improvement by Tag and Regime", fontsize=18)
 plt.savefig("heatmaps/f1_diff_both_regimes.png", dpi=300)
 plt.show()
 
 OTHER = ["ceb_gja", "tl_trg", "tl_ugnayan"]
 
-# collect overall + per‐tag metrics for OTHER langs
+# Collect overall + per‐tag metrics for OTHER langs
 dfs_other = {"head": [], "full": []}
 for slug in MODEL_SLUGS_ORDERED:
     for mode in MODES:
@@ -126,7 +109,7 @@ for slug in MODEL_SLUGS_ORDERED:
         overall = np.nanmean(vals)
         dfs_other[mode].append([overall] + vals)
 
-# build pandas DataFrames
+# Build pandas DataFrames
 df_other_head = pd.DataFrame(
     dfs_other["head"], index=index_labels, columns=["overall"] + OTHER
 )
@@ -134,7 +117,7 @@ df_other_full = pd.DataFrame(
     dfs_other["full"], index=index_labels, columns=["overall"] + OTHER
 )
 
-# combine into a single table with a 'mode' column
+# Combine into a single table with a 'mode' column
 df_other = (
     pd.concat([df_other_head.assign(mode="head"), df_other_full.assign(mode="full")])
     .reset_index()
@@ -144,7 +127,7 @@ df_other = (
     ]
 )
 
-# export to LaTeX
+# Export to LaTeX
 latex_other = df_other.to_latex(
     index=False,
     float_format="%.3f",
