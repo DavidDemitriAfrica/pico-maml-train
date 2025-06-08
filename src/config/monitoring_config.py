@@ -16,8 +16,8 @@ class LoggingConfig:
 @dataclass
 class WandbConfig:
     # configure logging to Weights and Biases
-    project: str = "pico-maml"
-    entity: str = "pico-lm"
+    project: str = None
+    entity: str = None
 
 
 @dataclass
