@@ -1,8 +1,8 @@
 [tool.poetry]
-name = "pico-train"
+name = "pico-maml-train"
 version = "1.0.0"
-description = "A minimalistic framework for transparently training language models and storing comprehensive checkpoints for in-depth learning dynamics research"
-authors = ["Richard Diehl Martinez <richard@picolm.io>"]
+description = "A minimalistic framework for transparently meta-training language models and storing comprehensive checkpoints for in-depth learning dynamics research"
+authors = ["David Demitri Africa <david.demitri.africa@gmail.com>"]
 license = "Apache 2.0"
 readme = "README.md"
 packages = [{include = "src"}]
