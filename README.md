@@ -79,10 +79,10 @@ We believe in:
 
 1. **Clone the Fork**
 
-   ```bash
+   <!-- ```bash
    git clone https://github.com/DavidDemitriAfrica/pico-maml-train
    cd pico-maml-train
-   ```
+   ``` -->
 
 2. **Configure Environment**
 
@@ -138,7 +138,7 @@ Leverage our companion tool [**pico-analyze**](https://github.com/pico-lm/pico-a
 
 ---
 
-## 📜 License & Citation
+<!-- ## 📜 License & Citation
 
 Pico MAML Train is released under the **Apache 2.0** license (see [`LICENSE`](LICENSE)).
 
@@ -150,7 +150,7 @@ If you use this framework in your research, please cite:
   title = {Pico MAML Train: A Meta‑Learning Extension for Language Model Pretraining},
   year = {2025},
   url = {https://github.com/pico-lm/pico-maml-train}
-}
+} -->
 ```
 
 **Happy meta‑learning!**
