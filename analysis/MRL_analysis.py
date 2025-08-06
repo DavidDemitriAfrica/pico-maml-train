@@ -159,7 +159,7 @@ def load_head_only(step: int) -> torch.nn.Module:
             if labels is not None:
                 loss_fn = torch.nn.CrossEntropyLoss(ignore_index=-100)
                 loss = loss_fn(
-                    logits.view(-1, cfg_.num_labels), labels.view(-1)
+                    logits.view(-1, self.cfg.num_labels), labels.view(-1)
                 )
             return TokenClassifierOutput(loss=loss, logits=logits)
 
