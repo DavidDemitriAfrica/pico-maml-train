@@ -23,6 +23,7 @@ import wandb
 from datasets import load_dataset
 from huggingface_hub import HfApi
 from seqeval.metrics import classification_report, f1_score
+from seqeval.scheme import IOB2 
 from transformers import (
     AutoTokenizer,
     DataCollatorForTokenClassification,
@@ -250,7 +251,7 @@ def eval_full(trainer: Trainer,
         output_dict=True,
         zero_division=0,
         mode="strict",            # <- keeps entity boundaries intact
-        scheme="IOB2",            # <- explicit is better than implicit
+        scheme=IOB2,            # <- explicit is better than implicit
     )
     macro = report["macro avg"]    
     # ---------------------------------------------------------------------------
