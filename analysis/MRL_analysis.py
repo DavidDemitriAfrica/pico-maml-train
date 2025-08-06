@@ -43,7 +43,7 @@ LOGPROB_DIR.mkdir(exist_ok=True)
 
 # ─────────────────────────── user knobs ──────────────────────────────────────
 SEED = 42
-PROJECT = "pico-lm/pico-maml-grid"
+PROJECT = "pico-maml-grid"
 HF_REPO_MAML = "davidafrica/pico-maml-decoder-medium"
 DATASET = "universalner/universal_ner"
 FT_SPLIT = "sk_snk"
