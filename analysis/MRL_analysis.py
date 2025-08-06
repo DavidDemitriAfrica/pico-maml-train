@@ -93,7 +93,14 @@ LOG.info(
 ds_ft = load_dataset(DATASET, FT_SPLIT, trust_remote_code=True)
 LABEL_LIST: List[str] = ds_ft["train"].features["ner_tags"].feature.names
 NUM_LABELS = len(LABEL_LIST)
-tokenizer = AutoTokenizer.from_pretrained(HF_REPO_MAML, trust_remote_code=True)
+
+# --- NEW: grab the first checkpoint that exists and load the tokenizer from it
+FIRST_STEP   = min(CHECKPOINT_STEPS)          # e.g. 0
+TOKEN_FOLDER = f"checkpoints/step_{FIRST_STEP}"
+
+tokenizer = AutoTokenizer.from_pretrained(HF_REPO_MAML, 
+                                        subfolder=TOKEN_FOLDER,                  # ← the crucial line
+                                        trust_remote_code=True)
 
 PARTICLES = {"si", "ni", "ang", "ng", "sa"}
 
