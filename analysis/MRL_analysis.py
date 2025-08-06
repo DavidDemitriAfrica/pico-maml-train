@@ -197,6 +197,17 @@ def eval_full(trainer, split: str):
         oov_cnt   += sum(tok not in tokenizer.vocab for tok in row)
         tot_tok   += len(row)
 
+    # -------------------------------- qualitative snippets ---------------
+    # crude ranking by per-sentence F1 delta against gold
+    sent_deltas = []
+    for idx, (g, p) in enumerate(zip(spans_gold, spans_pred)):
+        ok = sum(1 for span in p if span in g)
+        err = len(p) - ok + len(g) - ok
+        sent_deltas.append((ok - err, idx))      # larger = better
+    sent_deltas.sort()                           # ascending → worst first
+    worst = [raw[i]["tokens"] for _sc,i in sent_deltas[:2]]
+    best  = [raw[i]["tokens"] for _sc,i in sent_deltas[-2:]]
+
     return {
         "f1": class_f1["f1-score"],
         "per_f1": class_f1.get("PER", 0),
@@ -205,7 +216,9 @@ def eval_full(trainer, split: str):
         "miss": miss, "span": span, "type": typ, "spur": spur,
         "n_gold": sum(len(g) for g in spans_gold),
         "particle_recall": part_hits / max(1, sum(len(g) for g in spans_gold)),
-        "oov_rate": oov_cnt / tot_tok
+        "oov_rate": oov_cnt / tot_tok,
+        "snippets_best": best,
+        "snippets_worst": worst,
     }
 # ------------- run one checkpoint -------------------------------------------
 def run_step(step: int) -> Dict:
@@ -250,14 +263,22 @@ def run_step(step: int) -> Dict:
     test_scores = {}
     for split in EVAL_SPLITS:
         scores = eval_full(trainer, split)
-        wandb.log({f"{split}_metrics": scores})
-        test_scores.update({f"{split}_{k}": v for k,v in scores.items()})
-        # pick 2 best-improved and 2 worst-regressed sentences
-        delta = preds - labels  # crude: positive = correction, negative = new error
-        top = np.argsort(delta)[-2:]; worst = np.argsort(delta)[:2]
-        snips = [raw[i]["tokens"] for i in np.concatenate([top, worst])]
-        wandb.log({f"snippets_step{step}": wandb.Table(
-            columns=["tokens"], data=[[ " ".join(x) ] for x in snips])})
+
+        # log full metric dict
+        wandb.log({f"{split}_metrics": {k: v for k, v in scores.items()
+                                        if not k.startswith("snippets")}})
+
+        # log snippets as a W&B Table
+        table = wandb.Table(columns=["kind", "sentence"])
+        for sent in scores["snippets_best"]:
+            table.add_data("best", " ".join(sent))
+        for sent in scores["snippets_worst"]:
+            table.add_data("worst", " ".join(sent))
+        wandb.log({f"{split}_snippets": table})
+
+        # keep numbers for CSV
+        test_scores.update({f"{split}_{k}": v for k, v in scores.items()
+                            if not k.startswith("snippets")})
 
 
     run.finish()
