@@ -81,7 +81,8 @@ ALL_STEPS = sorted(
 CHECKPOINT_STEPS = [
     s for s in ALL_STEPS if 0 <= s <= MAX_STEP and s % STRIDE == 0
 ]
-MY_STEPS = [s for s in CHECKPOINT_STEPS if s % ARGS.n_shards == ARGS.shard]
+MY_STEPS = [s for i, s in enumerate(CHECKPOINT_STEPS)
+            if i % ARGS.n_shards == ARGS.shard]
 LOG.info(
     "Shard %d/%d will run %d checkpoints",
     ARGS.shard,
@@ -189,13 +190,25 @@ def micro_f1(eval_pred):
     return {"f1": f1_score(true_tags, pred_tags)}
 
 
-# ── full-set evaluator -------------------------------------------------------
-def particle_hits(tokens: List[str], spans: List[tuple[int, str]]) -> int:
-    return sum(
-        1
-        for idx, _ in spans
-        if idx > 0 and tokens[idx - 1].lower() in PARTICLES
-    )
+# ─── particle-aware recall helper ────────────────────────────────────────────
+def particle_hits(tokens: list, spans: list[tuple[int, str]]) -> int:
+    """
+    Count gold entities that are *immediately* preceded by a Filipino
+    particle (“si / ni / ang / ng / sa”).
+    """
+    hits = 0
+    for idx, _ in spans:
+        if idx == 0 or idx > len(tokens) - 1:       # out-of-range safety
+            continue
+        tok = tokens[idx - 1]
+        if isinstance(tok, bytes):                  # rare byte token
+            tok = tok.decode("utf-8", errors="ignore")
+        if isinstance(tok, list):                   # sub-token list → join
+            tok = "".join(map(str, tok))
+        if str(tok).lower() in PARTICLES:
+            hits += 1
+    return hits
+
 
 
 def eval_full(trainer: Trainer, split: str) -> Dict:
@@ -307,7 +320,7 @@ def run_step(step: int) -> Dict:
 
         # ─── match the working setup ─────────────────────────────────────────
         evaluation_strategy="steps",
-        eval_steps=500,
+        eval_steps=100,
         logging_strategy="steps",
         logging_steps=500,
         save_strategy="no",            # ← nothing is written to disk
