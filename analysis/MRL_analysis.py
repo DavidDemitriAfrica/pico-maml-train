@@ -34,6 +34,13 @@ from transformers.modeling_outputs import TokenClassifierOutput
 
 from src.model.pico_decoder import PicoDecoderHF, PicoDecoderHFConfig, RoPE
 
+import torch.nn.functional as F
+from pathlib import Path
+
+# ─── where raw per-sentence records go ───────────────────────────────────────
+LOGPROB_DIR = Path("logits_by_sent")
+LOGPROB_DIR.mkdir(exist_ok=True)
+
 # ─────────────────────────── user knobs ──────────────────────────────────────
 SEED = 42
 PROJECT = "pico-maml-grid"
@@ -211,13 +218,17 @@ def particle_hits(tokens: list, spans: list[tuple[int, str]]) -> int:
 
 
 
-def eval_full(trainer: Trainer, split: str) -> Dict:
+def eval_full(trainer: Trainer,
+              split: str,
+              step: int,
+              store_logits: bool = True,
+              keep_full_logits: bool = False) -> Dict:    
     raw = load_dataset(DATASET, split, trust_remote_code=True)["test"]
     tok_ds = raw.map(tok_align, batched=True, remove_columns=raw.column_names)
     output = trainer.predict(tok_ds)
-    pred_ids = np.argmax(output.predictions, axis=-1)
+    logits = output.predictions                       # (N, T, C)
+    pred_ids = np.argmax(logits, axis=-1)
     labels = output.label_ids
-
     spans_gold, spans_pred = [], []
     for p_row, l_row in zip(pred_ids, labels):
         g_spans, p_spans = [], []
@@ -281,6 +292,40 @@ def eval_full(trainer: Trainer, split: str) -> Dict:
     worst = [raw[i]["tokens"] for _, i in deltas[:2]]
     best = [raw[i]["tokens"] for _, i in deltas[-2:]]
 
+    # ─── NEW: persist per-sentence log-probs ────────────────────────────────
+    if store_logits:
+        records = []
+        logp = F.log_softmax(
+            torch.from_numpy(logits), dim=-1
+        ).cpu().numpy()                               # (N, T, C)
+
+        for sent_ix, (tok_row, lab_row, lp_row) in enumerate(
+            zip(raw["tokens"], labels, logp)
+        ):
+            for tok_ix, (lab, lp_vec) in enumerate(zip(lab_row, lp_row)):
+                if lab == -100:          # skip padding / sub-words
+                    continue
+                entry = {
+                    "sent_id": sent_ix,
+                    "tok_id": tok_ix,
+                    "token": tok_row[tok_ix],
+                    "gold_lab": LABEL_LIST[lab],
+                    "gold_lp": lp_vec[lab].astype(np.float32),
+                }
+                if keep_full_logits:
+                    entry["logits"] = lp_vec.astype(np.float16)
+                records.append(entry)
+
+        df_lp = pd.DataFrame.from_records(records)
+        out_path = LOGPROB_DIR / f"{split}_step{step:04d}.parquet"
+        df_lp.to_parquet(out_path, compression="zstd")
+
+        # attach lightweight preview to W&B, heavy file as Artifact
+        wandb.log({f"{split}_logprob_preview": wandb.Table(dataframe=df_lp.head(30))})
+        art = wandb.Artifact(f"{split}_logprobs_step{step:04d}", type="logprobs")
+        art.add_file(str(out_path))
+        wandb.log_artifact(art)
+
     return {
         "f1": macro["f1-score"],
         "per_f1": macro.get("PER", 0),
@@ -320,7 +365,7 @@ def run_step(step: int) -> Dict:
 
         # ─── match the working setup ─────────────────────────────────────────
         evaluation_strategy="steps",
-        eval_steps=100,
+        eval_steps=500,
         logging_strategy="steps",
         logging_steps=500,
         save_strategy="no",            # ← nothing is written to disk
@@ -352,7 +397,7 @@ def run_step(step: int) -> Dict:
 
     test_scores: Dict[str, float] = {}
     for split in EVAL_SPLITS:
-        scores = eval_full(trainer, split)
+        scores = eval_full(trainer, split, step)
 
         wandb.log(
             {f"{split}_metrics": {k: v for k, v in scores.items() if not k.startswith("snippets")}}
