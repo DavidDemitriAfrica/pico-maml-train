@@ -296,14 +296,24 @@ def run_step(step: int) -> Dict:
         per_device_train_batch_size=BATCH_SIZE,
         per_device_eval_batch_size=BATCH_SIZE,
         learning_rate=3e-5,
+        weight_decay=0.01,          # mirrors the reference script
         num_train_epochs=NUM_EPOCHS,
-        evaluation_strategy="epoch",
-        save_strategy="no",
-        report_to=["wandb"],
+
+        # ─── match the working setup ─────────────────────────────────────────
+        evaluation_strategy="steps",
+        eval_steps=500,
+        logging_strategy="steps",
+        logging_steps=500,
+        save_strategy="no",            # ← nothing is written to disk
+        load_best_model_at_end=False,  # ← so we don’t try to reload it
+        # ─────────────────────────────────────────────────────────────────────
+
         seed=SEED,
+        fp16=True,
+        dataloader_num_workers=4,
+        report_to=["wandb"],
         disable_tqdm=True,
-        load_best_model_at_end=True,
-        metric_for_best_model="eval_f1",
+        label_names=["labels"],
     )
 
     trainer = Trainer(
