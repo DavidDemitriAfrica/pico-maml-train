@@ -244,12 +244,15 @@ def eval_full(trainer: Trainer,
     gold_labels = [[lab for _, lab in g] for g in spans_gold]
     pred_labels = [[lab for _, lab in p] for p in spans_pred]
 
-    macro = classification_report(
+    report = classification_report(
         gold_labels,
         pred_labels,
         output_dict=True,
         zero_division=0,
-    )["macro avg"]
+        mode="strict",            # <- keeps entity boundaries intact
+        scheme="IOB2",            # <- explicit is better than implicit
+    )
+    macro = report["macro avg"]    
     # ---------------------------------------------------------------------------
 
 
@@ -339,9 +342,9 @@ def eval_full(trainer: Trainer,
 
     return {
         "f1": macro["f1-score"],
-        "per_f1": macro.get("PER", 0),
-        "loc_f1": macro.get("LOC", 0),
-        "org_f1": macro.get("ORG", 0),
+        "per_f1":  report.get("PER", {}).get("f1-score", 0.0),
+        "loc_f1":  report.get("LOC", {}).get("f1-score", 0.0),
+        "org_f1":  report.get("ORG", {}).get("f1-score", 0.0),
         "miss": miss,
         "span": span_err,
         "type": typ,
