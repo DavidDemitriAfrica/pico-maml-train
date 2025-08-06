@@ -432,6 +432,18 @@ def run_step(step: int) -> Dict:
 
 # ── sweep loop ---------------------------------------------------------------
 RESULTS: List[Dict] = []
+# ─── resume support ──────────────────────────────────────────────────────────
+DONE_STEPS = set()
+if Path(RESULT_CSV).exists():
+    try:
+        DONE_STEPS = set(pd.read_csv(RESULT_CSV)["step"].tolist())
+    except Exception:
+        pass  # corrupt / empty file → start fresh
+
+CHECKPOINT_STEPS = [s for s in CHECKPOINT_STEPS if s not in DONE_STEPS]
+MY_STEPS = [s for i, s in enumerate(CHECKPOINT_STEPS)
+            if i % ARGS.n_shards == ARGS.shard]
+
 start = time.time()
 for step in MY_STEPS:
     try:
