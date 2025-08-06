@@ -215,13 +215,19 @@ def eval_full(trainer: Trainer, split: str) -> Dict:
         spans_gold.append(g_spans)
         spans_pred.append(p_spans)
 
-    # class-wise F1
+    # --- class-wise F1 (macro) ---------------------------------------------------
+    # seqeval expects: List[List[str]]  → one inner list per sentence
+    gold_labels = [[lab for _, lab in g] for g in spans_gold]
+    pred_labels = [[lab for _, lab in p] for p in spans_pred]
+
     macro = classification_report(
-        [list(zip(*spans_gold)[1])],
-        [list(zip(*spans_pred)[1])],
+        gold_labels,
+        pred_labels,
         output_dict=True,
         zero_division=0,
     )["macro avg"]
+    # ---------------------------------------------------------------------------
+
 
     # taxonomy counts
     miss = span_err = typ = spur = 0
