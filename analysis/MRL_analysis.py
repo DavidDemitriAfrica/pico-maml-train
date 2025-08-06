@@ -295,36 +295,29 @@ def eval_full(trainer: Trainer,
     # ─── NEW: persist per-sentence log-probs ───────────────────────────────
     if store_logits:
         records = []
+        logp = F.log_softmax(torch.from_numpy(logits), dim=-1).cpu().numpy()  # (N,T,C)
 
-        logp = F.log_softmax(
-            torch.from_numpy(logits), dim=-1
-        ).cpu().numpy()                           # (N, T, C)
-
-        # ⬇️  REPLACE the old for-loops with everything between the bars
-        # ------------------------------------------------------------------
         for sent_ix, (tok_row, lab_row, lp_row) in enumerate(
             zip(raw["tokens"], labels, logp)
         ):
-            # re-encode once so we know how sub-tokens map back to words
-            enc  = tokenizer(tok_row,
-                             is_split_into_words=True,
-                             truncation=True,
-                             max_length=128)
-            wids = enc.word_ids()                 # len == nr. sub-tokens
+            # 1) re-encode once to get sub-token → word mapping
+            enc  = tokenizer(tok_row, is_split_into_words=True,
+                            truncation=True, max_length=128)
+            wids = enc.word_ids()           # len == nr. sub-tokens
 
             for sub_ix, (lab, lp_vec) in enumerate(zip(lab_row, lp_row)):
-                if lab == -100:                   # padding or extra sub-piece
+                if lab == -100:             # padding / extra sub-piece
                     continue
-                wid = wids[sub_ix]                # word index in tok_row[]
+                wid = wids[sub_ix]          # word index (0…len(tok_row)-1)
                 tok_txt = tok_row[wid] if wid is not None else \
-                          tokenizer.convert_ids_to_tokens(
-                              int(enc["input_ids"][sub_ix])
-                          )
+                        tokenizer.convert_ids_to_tokens(
+                            int(enc["input_ids"][sub_ix])
+                        )
 
                 entry = {
                     "sent_id":  sent_ix,
-                    "tok_id":   sub_ix,           # sub-token index
-                    "word_id":  wid,              # original word index
+                    "tok_id":   sub_ix,      # sub-token position
+                    "word_id":  wid,         # original word position
                     "token":    tok_txt,
                     "gold_lab": LABEL_LIST[lab],
                     "gold_lp":  lp_vec[lab].astype(np.float32),
