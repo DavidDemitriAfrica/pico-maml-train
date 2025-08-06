@@ -53,7 +53,7 @@ BATCH_SIZE = 16
 RESULT_CSV = "maml_results.csv"
 MAX_STEP = 6000
 STRIDE = 100
-WANDB_ENTITY = None  # set if needed
+WANDB_ENTITY = "pico-lm"  # set if needed
 # ─────────────────────────────────────────────────────────────────────────────
 
 # ── CLI sharding -------------------------------------------------------------
