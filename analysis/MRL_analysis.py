@@ -292,29 +292,47 @@ def eval_full(trainer: Trainer,
     worst = [raw[i]["tokens"] for _, i in deltas[:2]]
     best = [raw[i]["tokens"] for _, i in deltas[-2:]]
 
-    # ─── NEW: persist per-sentence log-probs ────────────────────────────────
+    # ─── NEW: persist per-sentence log-probs ───────────────────────────────
     if store_logits:
         records = []
+
         logp = F.log_softmax(
             torch.from_numpy(logits), dim=-1
-        ).cpu().numpy()                               # (N, T, C)
+        ).cpu().numpy()                           # (N, T, C)
 
+        # ⬇️  REPLACE the old for-loops with everything between the bars
+        # ------------------------------------------------------------------
         for sent_ix, (tok_row, lab_row, lp_row) in enumerate(
             zip(raw["tokens"], labels, logp)
         ):
-            for tok_ix, (lab, lp_vec) in enumerate(zip(lab_row, lp_row)):
-                if lab == -100:          # skip padding / sub-words
+            # re-encode once so we know how sub-tokens map back to words
+            enc  = tokenizer(tok_row,
+                             is_split_into_words=True,
+                             truncation=True,
+                             max_length=128)
+            wids = enc.word_ids()                 # len == nr. sub-tokens
+
+            for sub_ix, (lab, lp_vec) in enumerate(zip(lab_row, lp_row)):
+                if lab == -100:                   # padding or extra sub-piece
                     continue
+                wid = wids[sub_ix]                # word index in tok_row[]
+                tok_txt = tok_row[wid] if wid is not None else \
+                          tokenizer.convert_ids_to_tokens(
+                              int(enc["input_ids"][sub_ix])
+                          )
+
                 entry = {
-                    "sent_id": sent_ix,
-                    "tok_id": tok_ix,
-                    "token": tok_row[tok_ix],
+                    "sent_id":  sent_ix,
+                    "tok_id":   sub_ix,           # sub-token index
+                    "word_id":  wid,              # original word index
+                    "token":    tok_txt,
                     "gold_lab": LABEL_LIST[lab],
-                    "gold_lp": lp_vec[lab].astype(np.float32),
+                    "gold_lp":  lp_vec[lab].astype(np.float32),
                 }
                 if keep_full_logits:
                     entry["logits"] = lp_vec.astype(np.float16)
                 records.append(entry)
+        # ------------------------------------------------------------------
 
         df_lp = pd.DataFrame.from_records(records)
         out_path = LOGPROB_DIR / f"{split}_step{step:04d}.parquet"
